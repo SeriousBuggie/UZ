@@ -56,6 +56,11 @@ FFeedbackContextAnsi Warn;
 	FFileManagerAnsi FileManager;
 #endif
 
+#define COMMENT SLASH(/)
+#define SLASH(s) /##s
+
+#define delete COMMENT delete
+
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
 -----------------------------------------------------------------------------*/
