@@ -6,6 +6,7 @@
 #endif
 #include <malloc.h>
 #include <stdio.h>
+#include <algorithm>
 
 #include <Core.h>
 #include <FCodec.h>
@@ -59,17 +60,22 @@ FFeedbackContextAnsi Warn;
 #define COMMENT SLASH(/)
 #define SLASH(s) /##s
 
-#define delete COMMENT delete
+//#define delete COMMENT delete
 
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
 -----------------------------------------------------------------------------*/
+
+//#define USE_SORT // use sort instead of qsort
+
+#define SHOW_PROGRESS
 
 //#define DBG
 
 #ifdef DBG
 	class FMeasure {
 	public:
+		INT P1, P2;
 		FMeasure();
 		~FMeasure();
 	};
@@ -81,48 +87,75 @@ private:
 	enum {MAX_BUFFER_SIZE=0x40000}; /* Hand tuning suggests this is an ideal size */
 	static BYTE* CompressBuffer;
 	static INT CompressLength;
-	static INT ClampedBufferCompare( const INT* P1, const INT* P2 )
-	{
-		guardSlow(FCodecBWT::ClampedBufferCompare);
-		#ifdef DBG
-			FMeasure Measure;
-		#endif
+	#ifdef USE_SORT
+		static bool ClampedBufferCompare2( const INT P1, const INT P2 )
+		{
+			guardSlow(FCodecBWT::ClampedBufferCompare);
+			#ifdef DBG
+				FMeasure Measure;
+				Measure.P1 = P1;
+				Measure.P2 = P2;
+			#endif
 
-		BYTE* B1 = CompressBuffer + *P1;
-		BYTE* B2 = CompressBuffer + *P2;
+			BYTE* B1 = CompressBuffer + P1;
+			BYTE* B2 = CompressBuffer + P2;
 
-		// fastest
-		int ret = memcmp(B1, B2, CompressLength - Max(*P1,*P2));
-		return ret == 0 ? *P1 - *P2 : ret;
+			// fastest
+			int ret = memcmp(B1, B2, CompressLength - Max(P1, P2));
+			return ret == 0 ? P1 < P2 : ret < 0;
 
-		// average
-		for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-			INT B = *B1 - *B2;
-			if (B == 0) continue;
-			return B;
+			unguardSlow;
 		}
-		return *P1 - *P2; 
+	#else
+		static INT ClampedBufferCompare( const INT* P1, const INT* P2 )
+		{
+			guardSlow(FCodecBWT::ClampedBufferCompare);
+			#ifdef DBG
+				FMeasure Measure;
+				Measure.P1 = *P1;
+				Measure.P2 = *P2;
+			#endif
 
-		// slow
-		for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-			BYTE _B1 = *B1;
-			BYTE _B2 = *B2;
-			if (_B1 == _B2) continue;
-			return _B1 < _B2 ? -1 : 1;
+			BYTE* B1 = CompressBuffer + *P1;
+			BYTE* B2 = CompressBuffer + *P2;
+
+			// fastest
+			INT ret = memcmp(B1, B2, CompressLength - Max(*P1,*P2));
+			return ret == 0 ? *P1 - *P2 : ret;
+
+			// average
+			INT ret2 = appMemcmp(B1, B2, CompressLength - Max(*P1,*P2));
+			return ret2 == 0 ? *P1 - *P2 : ret2;
+
+			// average
+			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
+				INT B = *B1 - *B2;
+				if (B == 0) continue;
+				return B;
+			}
+			return *P1 - *P2; 
+
+			// slow
+			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
+				BYTE _B1 = *B1;
+				BYTE _B2 = *B2;
+				if (_B1 == _B2) continue;
+				return _B1 < _B2 ? -1 : 1;
+			}
+			return *P1 - *P2; 
+
+			// slowest, original
+			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
+				if( *B1 < *B2 )
+					return -1;
+				else if( *B1 > *B2 )
+					return 1;
+			}
+			return *P1 - *P2;
+
+			unguardSlow;
 		}
-		return *P1 - *P2; 
-
-		// slowest, original
-		for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-			if( *B1 < *B2 )
-				return -1;
-			else if( *B1 > *B2 )
-				return 1;
-		}
-		return *P1 - *P2;
-
-		unguardSlow;
-	}
+	#endif
 public:
 	#ifdef DBG
 		static FLOAT TotalTime;
@@ -139,17 +172,30 @@ public:
 			Count = 0;
 		#endif
 
+		#ifdef SHOW_PROGRESS			
+			Warn.LocalPrint(TEXT("0%"));
+			FString Progress;
+		#endif
+
 		TArray<BYTE> CompressBufferArray(MAX_BUFFER_SIZE);
 		TArray<INT>  CompressPosition   (MAX_BUFFER_SIZE+1);
 		CompressBuffer = &CompressBufferArray(0);
 		INT i, First=0, Last=0;
 		while( !In.AtEnd() )
 		{
+			#ifdef DBG
+				TotalTime = 0.f;
+				Count = 0;
+			#endif
 			CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
 			In.Serialize( CompressBuffer, CompressLength );
 			for( i=0; i<CompressLength+1; i++ )
 				CompressPosition(i) = i;
-			appQsort( &CompressPosition(0), CompressLength+1, sizeof(INT), (QSORT_COMPARE)ClampedBufferCompare );
+			#ifdef USE_SORT
+				std::sort(&CompressPosition(0), &CompressPosition(CompressLength), ClampedBufferCompare2);
+			#else
+				appQsort( &CompressPosition(0), CompressLength+1, sizeof(INT), (QSORT_COMPARE)ClampedBufferCompare );
+			#endif
 			for( i=0; i<CompressLength+1; i++ ) {
 				INT pos = CompressPosition(i);
 				if( pos==1 )
@@ -165,7 +211,23 @@ public:
 			//GWarn->Logf(TEXT("Compression table"));
 			//for( i=0; i<CompressLength+1; i++ )
 			//	GWarn->Logf(TEXT("    %03i: %s"),CompressPosition(i)?CompressBuffer[CompressPosition(i)-1]:-1,appFromAnsi((ANSICHAR*)CompressBuffer+CompressPosition(i)));
+
+			#ifdef SHOW_PROGRESS				
+				Warn.LocalPrint(*FString::Printf(
+					#ifdef DBG
+						TEXT("\n")
+					#else
+						TEXT("\r")
+					#endif
+					TEXT("%.3f%%"), 100.f*In.Tell()/In.TotalSize()));
+				#ifdef DBG
+					Warn.LocalPrint(*FString::Printf(TEXT("\t %i\t %f"), Count, TotalTime));
+				#endif
+			#endif
 		}
+		#ifdef SHOW_PROGRESS
+			Warn.LocalPrint(TEXT("\r"));
+		#endif
 
 		#ifdef DBG
 			GWarn->Logf(TEXT("DBG: %f secs on %i times"), TotalTime, Count);
@@ -211,7 +273,7 @@ public:
 	}
 };
 BYTE* FCodecBWT_fast::CompressBuffer;
-INT   FCodecBWT_fast::CompressLength;\
+INT   FCodecBWT_fast::CompressLength;
 
 #ifdef DBG
 	FLOAT FCodecBWT_fast::TotalTime;
@@ -220,10 +282,12 @@ INT   FCodecBWT_fast::CompressLength;\
 	FMeasure::FMeasure() {
 		FCodecBWT_fast::StartTime = appSeconds();
 	};
-	FMeasure::~FMeasure() {
+	FMeasure::~FMeasure() {		
 		FCodecBWT_fast::StartTime = appSeconds() - FCodecBWT_fast::StartTime; 
-		FCodecBWT_fast::TotalTime += FCodecBWT_fast::StartTime.GetFloat();
+		FLOAT time = FCodecBWT_fast::StartTime.GetFloat();
+		FCodecBWT_fast::TotalTime += time;
 		FCodecBWT_fast::Count++;
+		//if (time > 0.01) Warn.LocalPrint(*FString::Printf(TEXT("%f\t%i\t%i\n"), time, P1, P2));
 	};
 #endif
 
@@ -336,6 +400,7 @@ int main( int argc, char* argv[] ) {
 					FArchive* CFileAr = GFileManager->CreateFileWriter(*CFile);
 					if (!CFileAr) {
 						Warn.Logf(TEXT("Could not create %s"), *CFile);
+						UFileAr->Close();
 						delete UFileAr;
 						continue;
 					}
@@ -349,10 +414,11 @@ int main( int argc, char* argv[] ) {
 					*CFileAr << Signature;
 					*CFileAr << OrigFilename;
 					Codec[newformat].Encode(*UFileAr, *CFileAr);
+					UFileAr->Close();
 					delete UFileAr;
 					CFileAr->Close();
 					delete CFileAr;
-					Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)100.f*GFileManager->FileSize(*CFile)/USize);
+					Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(100.f*GFileManager->FileSize(*CFile)/USize + 0.5f));
 				}
 			} else if (Token == TEXT("DECOMPRESS")) {
 				for (int i = 2; i <= last; i++) {
@@ -376,6 +442,7 @@ int main( int argc, char* argv[] ) {
 						newformat = true;
 					} else {
 						Warn.Logf(TEXT("Unknown signature %i (must be 1234 or 5768) in %s"), Signature, *CFile);
+						CFileAr->Close();
 						delete CFileAr;
 						continue;
 					}
@@ -383,17 +450,19 @@ int main( int argc, char* argv[] ) {
 					FArchive* UFileAr = GFileManager->CreateFileWriter( *UFile );
 					if (!UFileAr) {
 						Warn.Logf(TEXT("Could not create %s"), *UFile);
+						CFileAr->Close();
 						delete CFileAr;
 						continue;
 					}
 					Codec[newformat].Decode(*CFileAr, *UFileAr);
+					CFileAr->Close();
 					delete CFileAr;
 					UFileAr->Close();
 					delete UFileAr;					
 					Warn.Logf(TEXT("Decompressed %s -> %s"), *CFile, *UFile);
 				}
 			} else {
-				Warn.Logf( TEXT("Unknown command '%s'. Try '%s help'."), *Token , *app);
+				Warn.Logf( TEXT("Unknown command '%s'. Try '%s help'."), *Token, *app);
 			}
 		}
 		GIsGuarded = 0;
