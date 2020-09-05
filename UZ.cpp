@@ -60,7 +60,7 @@ FFeedbackContextAnsi Warn;
 #define COMMENT SLASH(/)
 #define SLASH(s) /##s
 
-//#define delete COMMENT delete
+#define delete COMMENT delete
 
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
