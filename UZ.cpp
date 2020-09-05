@@ -81,6 +81,8 @@ FFeedbackContextAnsi Warn;
 	};
 #endif
 
+INT RealBufferSize = 0x2000;
+
 class FCodecBWT_fast : public FCodec
 {
 private:
@@ -188,7 +190,7 @@ public:
 				Count = 0;
 			#endif
 			CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
-			CompressLength = Min<INT>( CompressLength, 0x2000 ); // reduce buffer for avoid slow down
+			CompressLength = Min<INT>( CompressLength, RealBufferSize ); // reduce buffer for avoid slow down
 			In.Serialize( CompressBuffer, CompressLength );
 			for( i=0; i<CompressLength+1; i++ )
 				CompressPosition(i) = i;
@@ -342,12 +344,14 @@ int main( int argc, char* argv[] ) {
 		
 		if (Token == TEXT("") || Token == TEXT("HELP")) {
 			Warn.Logf(TEXT("Usage:\n")
-				TEXT("\t%s compress files_for_compress [newformat] [update]\n")
+				TEXT("\t%s compress files_for_compress [newformat] [update] [buffer=N]\n")
 				TEXT("\t%s decompress files_for_decompress\n\n")
 				TEXT("\tnewformat\tApplies run-length encoding to the compressed files. This increases the compression rate.\n")
-				TEXT("\tupdate\t\tOnly compress if the uz file does not exist, or if it is older than the corresponding source file."),
+				TEXT("\tupdate\t\tOnly compress if the uz file does not exist, or if it is older than the corresponding source file.\n")
+				TEXT("\tbuffer=N\tLimit BWT buffer to specified size. N is number, which can be in decimal or hexadecimal form (with prefix 0x). Bigger buffer - better but slower compression. Default limit: 0x%X"),
 				*app, 
-				*app);
+				*app,
+				RealBufferSize);
 		} else {
 			int last = argc - 1;
 			FString CFile;
@@ -368,16 +372,24 @@ int main( int argc, char* argv[] ) {
 			if (Token == TEXT("COMPRESS")) {
 				bool newformat = false;
 				bool update = false;
-				Token = appFromAnsi(argv[last]);
-				if (Token == TEXT("UPDATE")) {
-					update = true;
+				while (true) {
+					Token = appFromAnsi(argv[last]);
+					if (Token == TEXT("UPDATE")) {
+						update = true;
+					} else if (Token == TEXT("NEWFORMAT")) {
+						newformat = true;
+					} else if (Token.Left(7) == TEXT("BUFFER=")) {
+						TCHAR** End = NULL;
+						INT Size = wcstol(*Token + 7, End, 0);
+						if (Size >= 10) {
+							Warn.Logf(TEXT("BWT buffer size limited to %i (0x%X)"), Size, Size);
+							RealBufferSize = Size;
+						} else {
+							Warn.Logf(TEXT("Can't use buffer size '%s'"), *Token + 7);
+						}
+					} else break;
 					last--;
-				}
-				Token = appFromAnsi(argv[last]);
-				if (Token == TEXT("NEWFORMAT")) {
-					newformat = true;
-					last--;
-				}
+				}				
 				for (int i = 2; i <= last; i++) {
 					UFile = appFromAnsi(argv[i]);
 					CFile = UFile + TEXT(".uz");					
