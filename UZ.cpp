@@ -372,6 +372,7 @@ int main( int argc, char* argv[] ) {
 			if (Token == TEXT("COMPRESS")) {
 				bool newformat = false;
 				bool update = false;
+				bool extended = false;
 				while (true) {
 					Token = appFromAnsi(argv[last]);
 					if (Token == TEXT("UPDATE")) {
@@ -384,6 +385,7 @@ int main( int argc, char* argv[] ) {
 						if (Size >= 10) {
 							Warn.Logf(TEXT("BWT buffer size limited to %i (0x%X)"), Size, Size);
 							RealBufferSize = Size;
+							extended = true;
 						} else {
 							Warn.Logf(TEXT("Can't use buffer size '%s'"), *Token + 7);
 						}
@@ -424,7 +426,11 @@ int main( int argc, char* argv[] ) {
 					Codec[newformat].Encode(*UFileAr, *CFileAr);
 					delete UFileAr;
 					delete CFileAr;
-					Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(100.f*GFileManager->FileSize(*CFile)/USize + 0.5f));
+					if (extended) {
+						Warn.Logf(TEXT("Compressed %s -> %s (%.3f%%)"), *UFile, *CFile, 100.f*GFileManager->FileSize(*CFile)/USize);
+					} else {
+						Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(100.f*GFileManager->FileSize(*CFile)/USize + 0.5f));
+					}
 				}
 			} else if (Token == TEXT("DECOMPRESS")) {
 				for (int i = 2; i <= last; i++) {
