@@ -60,7 +60,7 @@ FFeedbackContextAnsi Warn;
 #define COMMENT SLASH(/)
 #define SLASH(s) /##s
 
-#define delete COMMENT delete
+//#define delete COMMENT delete
 
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
@@ -188,6 +188,7 @@ public:
 				Count = 0;
 			#endif
 			CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
+			CompressLength = Min<INT>( CompressLength, 0x2000 ); // reduce buffer for avoid slow down
 			In.Serialize( CompressBuffer, CompressLength );
 			for( i=0; i<CompressLength+1; i++ )
 				CompressPosition(i) = i;
@@ -352,21 +353,17 @@ int main( int argc, char* argv[] ) {
 			FString CFile;
 			FString UFile;
 			FCodecFull Codec[2];
-			FCodec* CodecRLE = new FCodecRLE;
-			FCodec* CodecBWT = new FCodecBWT_fast;
-			FCodec* CodecMTF = new FCodecMTF;
-			FCodec* CodecHuffman = new FCodecHuffman;
 
-			Codec[0].AddCodec(CodecRLE);
-			Codec[0].AddCodec(CodecBWT);
-			Codec[0].AddCodec(CodecMTF);
-			Codec[0].AddCodec(CodecHuffman);
+			Codec[0].AddCodec(new FCodecRLE);
+			Codec[0].AddCodec(new FCodecBWT_fast);
+			Codec[0].AddCodec(new FCodecMTF);
+			Codec[0].AddCodec(new FCodecHuffman);
 
-			Codec[1].AddCodec(CodecRLE);
-			Codec[1].AddCodec(CodecBWT);
-			Codec[1].AddCodec(CodecMTF);
-			Codec[1].AddCodec(CodecRLE);
-			Codec[1].AddCodec(CodecHuffman);
+			Codec[1].AddCodec(new FCodecRLE);
+			Codec[1].AddCodec(new FCodecBWT_fast);
+			Codec[1].AddCodec(new FCodecMTF);
+			Codec[1].AddCodec(new FCodecRLE);
+			Codec[1].AddCodec(new FCodecHuffman);
 
 			if (Token == TEXT("COMPRESS")) {
 				bool newformat = false;
@@ -400,7 +397,6 @@ int main( int argc, char* argv[] ) {
 					FArchive* CFileAr = GFileManager->CreateFileWriter(*CFile);
 					if (!CFileAr) {
 						Warn.Logf(TEXT("Could not create %s"), *CFile);
-						UFileAr->Close();
 						delete UFileAr;
 						continue;
 					}
@@ -414,9 +410,7 @@ int main( int argc, char* argv[] ) {
 					*CFileAr << Signature;
 					*CFileAr << OrigFilename;
 					Codec[newformat].Encode(*UFileAr, *CFileAr);
-					UFileAr->Close();
 					delete UFileAr;
-					CFileAr->Close();
 					delete CFileAr;
 					Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(100.f*GFileManager->FileSize(*CFile)/USize + 0.5f));
 				}
@@ -442,7 +436,6 @@ int main( int argc, char* argv[] ) {
 						newformat = true;
 					} else {
 						Warn.Logf(TEXT("Unknown signature %i (must be 1234 or 5768) in %s"), Signature, *CFile);
-						CFileAr->Close();
 						delete CFileAr;
 						continue;
 					}
@@ -450,14 +443,11 @@ int main( int argc, char* argv[] ) {
 					FArchive* UFileAr = GFileManager->CreateFileWriter( *UFile );
 					if (!UFileAr) {
 						Warn.Logf(TEXT("Could not create %s"), *UFile);
-						CFileAr->Close();
 						delete CFileAr;
 						continue;
 					}
 					Codec[newformat].Decode(*CFileAr, *UFileAr);
-					CFileAr->Close();
 					delete CFileAr;
-					UFileAr->Close();
 					delete UFileAr;					
 					Warn.Logf(TEXT("Decompressed %s -> %s"), *CFile, *UFile);
 				}
@@ -465,6 +455,7 @@ int main( int argc, char* argv[] ) {
 				Warn.Logf( TEXT("Unknown command '%s'. Try '%s help'."), *Token, *app);
 			}
 		}
+		GMem.Exit();
 		GIsGuarded = 0;
 	}
 #ifndef _DEBUG
