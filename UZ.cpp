@@ -348,7 +348,7 @@ int main( int argc, char* argv[] ) {
 				TEXT("\t%s decompress files_for_decompress\n\n")
 				TEXT("\tnewformat\tApplies run-length encoding to the compressed files. This increases the compression rate.\n")
 				TEXT("\tupdate\t\tOnly compress if the uz file does not exist, or if it is older than the corresponding source file.\n")
-				TEXT("\allowbad\t\tAllows the creation of .uz files that cause crash on clients below version 469.\n")
+				TEXT("\tallowbad\t\tAllows the creation of .uz files that cause crash on clients below version 469.\n")
 				TEXT("\tbuffer=N\tLimit the BWT buffer to the specified size. N is a number that can be in decimal or hexadecimal form (prefixed with 0x). Bigger buffer is better, but slower compression. Default limit: 0x%X. Maximal value: 0x40000."),
 				*app, 
 				*app,
