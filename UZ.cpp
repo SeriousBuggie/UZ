@@ -344,11 +344,12 @@ int main( int argc, char* argv[] ) {
 		
 		if (Token == TEXT("") || Token == TEXT("HELP")) {
 			Warn.Logf(TEXT("Usage:\n")
-				TEXT("\t%s compress files_for_compress [newformat] [update] [buffer=N]\n")
+				TEXT("\t%s compress files_for_compress [newformat] [update] [allowbad] [buffer=N]\n")
 				TEXT("\t%s decompress files_for_decompress\n\n")
 				TEXT("\tnewformat\tApplies run-length encoding to the compressed files. This increases the compression rate.\n")
 				TEXT("\tupdate\t\tOnly compress if the uz file does not exist, or if it is older than the corresponding source file.\n")
-				TEXT("\tbuffer=N\tLimit BWT buffer to specified size. N is number, which can be in decimal or hexadecimal form (with prefix 0x). Bigger buffer - better but slower compression. Default limit: 0x%X"),
+				TEXT("\allowbad\t\tAllows the creation of .uz files that cause crash on clients below version 469.\n")
+				TEXT("\tbuffer=N\tLimit the BWT buffer to the specified size. N is a number that can be in decimal or hexadecimal form (prefixed with 0x). Bigger buffer is better, but slower compression. Default limit: 0x%X. Maximal value: 0x40000."),
 				*app, 
 				*app,
 				RealBufferSize);
@@ -373,17 +374,20 @@ int main( int argc, char* argv[] ) {
 				bool newformat = false;
 				bool update = false;
 				bool extended = false;
+				bool AllowBad = false;
 				while (true) {
 					Token = appFromAnsi(argv[last]);
-					if (Token == TEXT("UPDATE")) {
-						update = true;
-					} else if (Token == TEXT("NEWFORMAT")) {
+					if (Token == TEXT("NEWFORMAT")) {
 						newformat = true;
+					} else if (Token == TEXT("UPDATE")) {
+						update = true;
+					} else if (Token == TEXT("ALLOWBAD")) {
+						AllowBad = true;
 					} else if (Token.Left(7) == TEXT("BUFFER=")) {
 						TCHAR** End = NULL;
 						INT Size = wcstol(*Token + 7, End, 0);
 						if (Size >= 10) {
-							Warn.Logf(TEXT("BWT buffer size limited to %i (0x%X)"), Size, Size);
+							Warn.Logf(TEXT("The BWT buffer size is limited to %i (0x%X) bytes"), Size, Size);
 							RealBufferSize = Size;
 							extended = true;
 						} else {
@@ -426,10 +430,17 @@ int main( int argc, char* argv[] ) {
 					Codec[newformat].Encode(*UFileAr, *CFileAr);
 					delete UFileAr;
 					delete CFileAr;
+					INT CSize = GFileManager->FileSize(*CFile);
+					if (CSize > USize && !AllowBad) {
+						Warn.Logf(TEXT("Skipped: This .uz file cause crash on clients below 469. Use the 'allowbad' parameter to create this .uz file anyway.\n")
+							TEXT("Such files should be the last in the ServerPackages list to avoid speed drops for all subsequent files on older clients."));
+						continue;
+					}
+					FLOAT Rate = 100.f*CSize/USize;					
 					if (extended) {
-						Warn.Logf(TEXT("Compressed %s -> %s (%.3f%%)"), *UFile, *CFile, 100.f*GFileManager->FileSize(*CFile)/USize);
+						Warn.Logf(TEXT("Compressed %s -> %s (%.3f%%)"), *UFile, *CFile, Rate);
 					} else {
-						Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(100.f*GFileManager->FileSize(*CFile)/USize + 0.5f));
+						Warn.Logf(TEXT("Compressed %s -> %s (%i%%)"), *UFile, *CFile, (INT)(Rate + 0.5f));
 					}
 				}
 			} else if (Token == TEXT("DECOMPRESS")) {
