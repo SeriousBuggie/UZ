@@ -12,6 +12,8 @@
 #include <FCodec.h>
 //#include <Engine.h>
 
+#include "bwtsort.h"
+
 INT GFilesOpen, GFilesOpened;
 
 /*-----------------------------------------------------------------------------
@@ -66,7 +68,12 @@ FFeedbackContextAnsi Warn;
 	Burrows-Wheeler inspired data compressor.
 -----------------------------------------------------------------------------*/
 
-//#define USE_SORT // use sort instead of qsort
+#define USE_qsort 0 // AS UCC does
+#define USE_sort 1 // use qsort mixed with heapsort after some depth, which slower from qsort
+#define USE_stable_sort 2 // use merge sort, which faster from qsort
+#define USE_bwtsort 3 // use https://sourceforge.net/projects/bwtcoder/files/bwtcoder/preliminary-2/ - best
+
+#define USE_SORT USE_bwtsort 
 
 #define SHOW_PROGRESS
 
@@ -81,7 +88,7 @@ FFeedbackContextAnsi Warn;
 	};
 #endif
 
-INT RealBufferSize = 0x2000;
+INT RealBufferSize = 0x40000;
 
 class FCodecBWT_fast : public FCodec
 {
@@ -89,7 +96,7 @@ private:
 	enum {MAX_BUFFER_SIZE=0x40000}; /* Hand tuning suggests this is an ideal size */
 	static BYTE* CompressBuffer;
 	static INT CompressLength;
-	#ifdef USE_SORT
+	#if (USE_SORT == USE_stable_sort || USE_SORT == USE_sort)
 		static bool ClampedBufferCompare2( const INT P1, const INT P2 )
 		{
 			guardSlow(FCodecBWT::ClampedBufferCompare);
@@ -108,7 +115,7 @@ private:
 
 			unguardSlow;
 		}
-	#else
+	#elif (USE_SORT == USE_qsort)
 		static INT ClampedBufferCompare( const INT* P1, const INT* P2 )
 		{
 			guardSlow(FCodecBWT::ClampedBufferCompare);
@@ -180,8 +187,13 @@ public:
 		#endif
 
 		TArray<BYTE> CompressBufferArray(MAX_BUFFER_SIZE);
-		TArray<INT>  CompressPosition   (MAX_BUFFER_SIZE+1);
 		CompressBuffer = &CompressBufferArray(0);
+		#if (USE_SORT == USE_bwtsort)
+			KeyPrefix* CompressPos;
+		#else
+			TArray<INT>  CompressPosition   (MAX_BUFFER_SIZE+1);
+			INT* CompressPos = &CompressPosition(0);
+		#endif		
 		INT i, First=0, Last=0;
 		while( !In.AtEnd() )
 		{
@@ -192,15 +204,21 @@ public:
 			CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
 			CompressLength = Min<INT>( CompressLength, RealBufferSize ); // reduce buffer for avoid slow down
 			In.Serialize( CompressBuffer, CompressLength );
-			for( i=0; i<CompressLength+1; i++ )
-				CompressPosition(i) = i;
-			#ifdef USE_SORT
-				std::sort(&CompressPosition(0), &CompressPosition(CompressLength), ClampedBufferCompare2);
-			#else
-				appQsort( &CompressPosition(0), CompressLength+1, sizeof(INT), (QSORT_COMPARE)ClampedBufferCompare );
+			#if (USE_SORT != USE_bwtsort)
+				for( i=0; i<CompressLength+1; i++ ) CompressPos[i] = i;
+			#endif
+			#if (USE_SORT == USE_stable_sort)
+				std::stable_sort(&CompressPos[0], &CompressPos[CompressLength], ClampedBufferCompare2);
+			#elif (USE_SORT == USE_sort)
+				std::sort(&CompressPos[0], &CompressPos[CompressLength], ClampedBufferCompare2);
+			#elif (USE_SORT == USE_qsort)
+				appQsort( &CompressPos[0], CompressLength+1, sizeof(INT), (QSORT_COMPARE)ClampedBufferCompare );
+			#elif (USE_SORT == USE_bwtsort)
+				CompressPos = bwtsort(CompressBuffer, CompressLength);
+				CompressPos[CompressLength].offset = CompressLength;
 			#endif
 			for( i=0; i<CompressLength+1; i++ ) {
-				INT pos = CompressPosition(i);
+				INT pos = CompressPos[i];
 				if( pos==1 )
 					First = i;
 				else if( pos==0 )
@@ -208,12 +226,12 @@ public:
 			}
 			Out << CompressLength << First << Last;
 			for( i=0; i<CompressLength+1; i++ ) {
-				INT pos = CompressPosition(i);
+				INT pos = CompressPos[i];
 				Out << CompressBuffer[pos?pos-1:0];
 			}
-			//GWarn->Logf(TEXT("Compression table"));
-			//for( i=0; i<CompressLength+1; i++ )
-			//	GWarn->Logf(TEXT("    %03i: %s"),CompressPosition(i)?CompressBuffer[CompressPosition(i)-1]:-1,appFromAnsi((ANSICHAR*)CompressBuffer+CompressPosition(i)));
+			#if (USE_SORT == USE_bwtsort)
+				free(CompressPos);
+			#endif
 
 			#ifdef SHOW_PROGRESS				
 				Warn.LocalPrint(*FString::Printf(
