@@ -260,34 +260,35 @@ public:
 	UBOOL Decode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecBWT::Decode);
-		TArray<BYTE> DecompressBuffer(MAX_BUFFER_SIZE+1);
-		TArray<INT>  Temp(MAX_BUFFER_SIZE+1);
-		INT DecompressLength, DecompressCount[256+1], RunningTotal[256+1], i, j;
+		TArray<BYTE>  DecompressBuffer_(MAX_BUFFER_SIZE+1);
+		BYTE* DecompressBuffer = &DecompressBuffer_(0);
+		TArray<INT>  Temp_(MAX_BUFFER_SIZE+1);
+		INT*  Temp = &Temp_(0);
+		INT DecompressLength, DecompressCount[256+1], RunningTotal[256+1];
 		while( !In.AtEnd() )
 		{
 			INT First, Last;
 			In << DecompressLength << First << Last;
 			check(DecompressLength<=MAX_BUFFER_SIZE+1);
 			check(DecompressLength<=In.TotalSize()-In.Tell());
-			In.Serialize( &DecompressBuffer(0), ++DecompressLength );
-			for( i=0; i<257; i++ )
-				DecompressCount[ i ]=0;
-			for( i=0; i<DecompressLength; i++ )
-				DecompressCount[ i!=Last ? DecompressBuffer(i) : 256 ]++;
+			In.Serialize( &DecompressBuffer[0], ++DecompressLength );
+			memset(&DecompressCount[0], 0, sizeof(DecompressCount));
+			for( INT i=0; i<DecompressLength; i++ )
+				DecompressCount[ i!=Last ? DecompressBuffer[i] : 256 ]++;
 			INT Sum = 0;
-			for( i=0; i<257; i++ )
+			for( INT i=0; i<257; i++ )
 			{
 				RunningTotal[i] = Sum;
 				Sum += DecompressCount[i];
 				DecompressCount[i] = 0;
 			}
-			for( i=0; i<DecompressLength; i++ )
+			for( INT i=0; i<DecompressLength; i++ )
 			{
-				INT Index = i!=Last ? DecompressBuffer(i) : 256;
-				Temp(RunningTotal[Index] + DecompressCount[Index]++) = i;
+				INT Index = i!=Last ? DecompressBuffer[i] : 256;
+				Temp[RunningTotal[Index] + DecompressCount[Index]++] = i;
 			}
-			for( i=First,j=0 ; j<DecompressLength-1; i=Temp(i),j++ )
-				Out << DecompressBuffer(i);
+			for( INT i=First,j=0 ; j<DecompressLength-1; i=Temp[i],j++ )
+				Out << DecompressBuffer[i];
 		}
 		return 1;
 		unguard;
@@ -312,6 +313,8 @@ INT   FCodecBWT_fast::CompressLength;
 	};
 #endif
 
+#define BUF_SIZE 0x10000
+
 /*-----------------------------------------------------------------------------
 	RLE compressor.
 -----------------------------------------------------------------------------*/
@@ -320,29 +323,35 @@ class FCodecRLE_fast : public FCodec
 {
 private:
 	enum {RLE_LEAD=5};
-	UBOOL EncodeEmitRun( FArchive& Out, BYTE Char, BYTE Count )
+	inline void EncodeEmitRun( FArchive& Out, BYTE Char, BYTE Count )
 	{
 		for( INT Down=Min<INT>(Count,RLE_LEAD); Down>0; Down-- )
 			Out << Char;
 		if( Count>=RLE_LEAD )
 			Out << Count;
-		return 1;
 	}
 public:
 	UBOOL Encode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecRLE::Encode);
-		BYTE PrevChar=0, PrevCount=0, B;
-		while( !In.AtEnd() )
+		BYTE PrevChar=0, PrevCount=0, BufIn[BUF_SIZE];
+		INT Length = In.TotalSize();
+		while( Length > 0 )
 		{
-			In << B;
-			if( B!=PrevChar || PrevCount==255 )
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ )
 			{
-				EncodeEmitRun( Out, PrevChar, PrevCount );
-				PrevChar  = B;
-				PrevCount = 0;
+				BYTE B = BufIn[j];
+				if( B!=PrevChar || PrevCount==255 )
+				{
+					EncodeEmitRun( Out, PrevChar, PrevCount );
+					PrevChar  = B;
+					PrevCount = 0;
+				}
+				PrevCount++;
 			}
-			PrevCount++;
+			Length -= BufLength;
 		}
 		EncodeEmitRun( Out, PrevChar, PrevCount );
 		return 0;
@@ -352,24 +361,37 @@ public:
 	{
 		guard(FCodecRLE::Decode);
 		INT Count=0;
-		BYTE PrevChar=0, B, C;
-		while( !In.AtEnd() )
+		BYTE PrevChar=0, BufIn[BUF_SIZE];
+		INT Length = In.TotalSize();
+		while( Length > 0 )
 		{
-			In << B;
-			Out << B;
-			if( B!=PrevChar )
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ )
 			{
-				PrevChar = B;
-				Count    = 1;
+				BYTE B = BufIn[j];
+				Out << B;
+				if( B!=PrevChar )
+				{
+					PrevChar = B;
+					Count    = 1;
+				}
+				else if( ++Count==RLE_LEAD )
+				{
+					BYTE C;
+					if (j == BufLength - 1) {
+						In << C;
+						Length--;
+					} else {
+						C = BufIn[++j];
+					}
+					check(C>=2);
+					while( C-->RLE_LEAD )
+						Out << B;
+					Count = 0;
+				}
 			}
-			else if( ++Count==RLE_LEAD )
-			{
-				In << C;
-				check(C>=2);
-				while( C-->RLE_LEAD )
-					Out << B;
-				Count = 0;
-			}
+			Length -= BufLength;
 		}
 		return 1;
 		unguard;
@@ -380,38 +402,44 @@ public:
 	Huffman codec.
 -----------------------------------------------------------------------------*/
 
+static BYTE GShift[8]={0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
+
 class FCodecHuffman_fast : public FCodec
 {
 private:
 	struct FHuffman
 	{
 		INT Ch, Count;
-		TArray<FHuffman*> Child;
+		FHuffman* Child[2];
 		TArray<BYTE> Bits;
-		FHuffman( INT InCh )
-		: Ch(InCh), Count(0)
+		FHuffman( INT InCh = -1, INT InCount = 0 )
+			: Ch(InCh), Count(InCount), Child()
 		{
 		}
 		~FHuffman()
 		{
-			for( INT i=0; i<Child.Num(); i++ )
-				delete Child( i );
+			if (Child[0])
+				for( INT i=0; i<2; i++ )
+					delete Child[i];
 		}
 		void PrependBit( BYTE B )
 		{
 			Bits.Insert( 0 );
 			Bits(0) = B;
-			for( INT i=0; i<Child.Num(); i++ )
-				Child(i)->PrependBit( B );
+			if (Child[0])
+				for( INT i=0; i<2; i++ )
+					Child[i]->PrependBit( B );
 		}
 		void WriteTable( FBitWriter& Writer )
 		{
-			Writer.WriteBit( Child.Num()!=0 );
-			if( Child.Num() )
-				for( INT i=0; i<Child.Num(); i++ )
-					Child(i)->WriteTable( Writer );
+			if( Child[0] ) {
+				Writer.WriteBit( 1 );
+				for( INT i=0; i<2; i++ )
+					Child[i]->WriteTable( Writer );
+			}
 			else
 			{
+				Writer.WriteBit( 0 );
 				BYTE B = Ch;
 				Writer << B;
 			}
@@ -420,11 +448,11 @@ private:
 		{
 			if( Reader.ReadBit() )
 			{
-				Child.Add( 2 );
-				for( INT i=0; i<Child.Num(); i++ )
+				for( INT i=0; i<2; i++ )
 				{
-					Child( i ) = new FHuffman( -1 );
-					Child( i )->ReadTable( Reader );
+					FHuffman* Huffman = new FHuffman();
+					Child[ i ] = Huffman;
+					Huffman->ReadTable( Reader );
 				}
 			}
 			else Ch = Arctor<BYTE>( Reader );
@@ -438,18 +466,26 @@ public:
 	UBOOL Encode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecHuffman::Encode);
+		BYTE BufIn[BUF_SIZE];
 		INT SavedPos = In.Tell();
-		INT Total=0, i;
+		INT Total=In.TotalSize()-In.Tell();
+		Out << Total;
+
+		INT Counts[256] = {0};
+		for( INT Length=Total; Length>0;) {
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ )
+				Counts[BufIn[j]]++;
+			Length -= BufLength;
+		}
+		In.Seek( SavedPos );
 
 		// Compute character frequencies.
 		TArray<FHuffman*> Huff(256);
-		for( i=0; i<256; i++ )
-			Huff(i) = new FHuffman(i);
+		for( INT i=0; i<256; i++ )
+			Huff(i) = new FHuffman(i, Counts[i]);
 		TArray<FHuffman*> Index = Huff;
-		while( !In.AtEnd() )
-			Huff(Arctor<BYTE>(In))->Count++, Total++;
-		In.Seek( SavedPos );
-		Out << Total;
 
 		// Build compression table.
 		while( Huff.Num()>1 && Huff.Last()->Count==0 )
@@ -457,15 +493,16 @@ public:
 		INT BitCount = Huff.Num()*(8+1);
 		while( Huff.Num()>1 )
 		{
-			FHuffman* Node  = new FHuffman( -1 );
-			Node->Child.Add( 2 );
-			for( i=0; i<Node->Child.Num(); i++ )
+			FHuffman* Node  = new FHuffman();
+			for( INT i=0; i<2; i++ )
 			{
-				Node->Child(i) = Huff.Pop();
-				Node->Child(i)->PrependBit(i);
-				Node->Count += Node->Child(i)->Count;
+				FHuffman* Huffman = Huff.Pop();
+				Node->Child[i] = Huffman;
+				Huffman->PrependBit(i);
+				Node->Count += Huffman->Count;
 			}
-			for( i=0; i<Huff.Num(); i++ )
+			INT i, N = Huff.Num();
+			for( i=0; i<N; i++ )
 				if( Huff(i)->Count < Node->Count )
 					break;
 			Huff.Insert( i );
@@ -475,22 +512,33 @@ public:
 		FHuffman* Root = Huff.Pop();
 
 		// Calc stats.
-		while( !In.AtEnd() )
-			BitCount += Index(Arctor<BYTE>(In))->Bits.Num();
-		In.Seek( SavedPos );
+		for( INT i=0; i<256; i++ ) {
+			INT Count = Counts[i];
+			if (Count == 0) continue;
+			BitCount += Index(i)->Bits.Num()*Count;
+		}
 
 		// Save table and bitstream.
 		FBitWriter Writer( BitCount );
 		Root->WriteTable( Writer );
-		while( !In.AtEnd() )
-		{
-			FHuffman* P = Index(Arctor<BYTE>(In));
-			for( INT i=0; i<P->Bits.Num(); i++ )
-				Writer.WriteBit( P->Bits(i) );
+		INT Pos = Writer.GetNumBits();
+		BYTE* Data = Writer.GetData();
+		for( INT Length=Total; Length>0;) {
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ ) {
+				FHuffman* P = Index(BufIn[j]);
+				for( INT i=0, N=P->Bits.Num(); i<N; i++ ) {
+					if (P->Bits(i))
+						Data[Pos>>3] |= GShift[Pos&7];
+					Pos++;
+				}
+			}
+			Length -= BufLength;
 		}
 		check(!Writer.IsError());
-		check(Writer.GetNumBits()==BitCount);
-		Out.Serialize( Writer.GetData(), Writer.GetNumBytes() );
+		check(Pos==BitCount);
+		Out.Serialize( Data, (Pos + 7)>>3 );
 
 		// Finish up.
 		delete Root;
@@ -508,12 +556,17 @@ public:
 		FBitReader Reader( &InArray(0), InArray.Num()*8 );
 		FHuffman Root(-1);
 		Root.ReadTable( Reader );
+		INT Pos = Reader.GetPosBits();
+		BYTE* Data = Reader.GetData();
+		INT TotalBits = Reader.GetNumBits();
 		while( Total-- > 0 )
 		{
-			check(!Reader.AtEnd());
+			check(TotalBits - Pos > 0);
 			FHuffman* Node = &Root;
-			while( Node->Ch==-1 )
-				Node = Node->Child( Reader.ReadBit() );
+			while( Node->Ch==-1 ) {
+				Node = Node->Child[(Data[Pos>>3] & GShift[Pos&7]) != 0];
+				Pos++;
+			}
 			BYTE B = Node->Ch;
 			Out << B;
 		}
@@ -532,23 +585,23 @@ public:
 	UBOOL Encode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecMTF::Encode);
-		BYTE List[256], B, C;
-		INT i;
-		for( i=0; i<256; i++ )
-			List[i] = i;
-		while( !In.AtEnd() )
+		BYTE List[256], BufIn[BUF_SIZE], BufOut[BUF_SIZE];
+		INT Length = In.TotalSize();
+		for( INT i=0; i<256; i++ ) List[i] = i;
+		while( Length > 0 )
 		{
-			In << B;
-			for( i=0; i<256; i++ )
-				if( List[i]==B )
-					break;
-			check(i<256);
-			C = i;
-			Out << C;
-			INT NewPos=0;
-			for( i; i>NewPos; i-- )
-				List[i]=List[i-1];
-			List[NewPos] = B;
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ )
+			{
+				BYTE B = BufIn[j];
+				BYTE i = (BYTE)((BYTE*)memchr(&List[0], B, 256) - &List[0]);
+				BufOut[j] = i;
+				memmove(&List[1], &List[0], i);
+				List[0] = B;
+			}
+			Out.Serialize( BufOut, BufLength );
+			Length -= BufLength;
 		}
 		return 0;
 		unguard;
@@ -556,19 +609,23 @@ public:
 	UBOOL Decode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecMTF::Decode);
-		BYTE List[256], B, C;
-		INT i;
-		for( i=0; i<256; i++ )
-			List[i] = i;
-		while( !In.AtEnd() )
+		BYTE List[256], BufIn[BUF_SIZE], BufOut[BUF_SIZE];
+		INT Length = In.TotalSize();
+		for( INT i=0; i<256; i++ ) List[i] = i;
+		while( Length > 0 )
 		{
-			In << B;
-			C = List[B];
-			Out << C;
-			INT NewPos=0;
-			for( i=B; i>NewPos; i-- )
-				List[i]=List[i-1];
-			List[NewPos] = C;
+			INT BufLength = Min(Length, BUF_SIZE);
+			In.Serialize( BufIn, BufLength );
+			for( INT j=0; j<BufLength; j++ )
+			{
+				BYTE B = BufIn[j];
+				BYTE C = List[B];
+				BufOut[j] = C;
+				memmove(&List[1], &List[0], B);
+				List[0] = C;
+			}
+			Out.Serialize( BufOut, BufLength );
+			Length -= BufLength;
 		}
 		return 1;
 		unguard;
