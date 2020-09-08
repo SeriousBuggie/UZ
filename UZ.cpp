@@ -313,6 +313,269 @@ INT   FCodecBWT_fast::CompressLength;
 #endif
 
 /*-----------------------------------------------------------------------------
+	RLE compressor.
+-----------------------------------------------------------------------------*/
+
+class FCodecRLE_fast : public FCodec
+{
+private:
+	enum {RLE_LEAD=5};
+	UBOOL EncodeEmitRun( FArchive& Out, BYTE Char, BYTE Count )
+	{
+		for( INT Down=Min<INT>(Count,RLE_LEAD); Down>0; Down-- )
+			Out << Char;
+		if( Count>=RLE_LEAD )
+			Out << Count;
+		return 1;
+	}
+public:
+	UBOOL Encode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecRLE::Encode);
+		BYTE PrevChar=0, PrevCount=0, B;
+		while( !In.AtEnd() )
+		{
+			In << B;
+			if( B!=PrevChar || PrevCount==255 )
+			{
+				EncodeEmitRun( Out, PrevChar, PrevCount );
+				PrevChar  = B;
+				PrevCount = 0;
+			}
+			PrevCount++;
+		}
+		EncodeEmitRun( Out, PrevChar, PrevCount );
+		return 0;
+		unguard;
+	}
+	UBOOL Decode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecRLE::Decode);
+		INT Count=0;
+		BYTE PrevChar=0, B, C;
+		while( !In.AtEnd() )
+		{
+			In << B;
+			Out << B;
+			if( B!=PrevChar )
+			{
+				PrevChar = B;
+				Count    = 1;
+			}
+			else if( ++Count==RLE_LEAD )
+			{
+				In << C;
+				check(C>=2);
+				while( C-->RLE_LEAD )
+					Out << B;
+				Count = 0;
+			}
+		}
+		return 1;
+		unguard;
+	}
+};
+
+/*-----------------------------------------------------------------------------
+	Huffman codec.
+-----------------------------------------------------------------------------*/
+
+class FCodecHuffman_fast : public FCodec
+{
+private:
+	struct FHuffman
+	{
+		INT Ch, Count;
+		TArray<FHuffman*> Child;
+		TArray<BYTE> Bits;
+		FHuffman( INT InCh )
+		: Ch(InCh), Count(0)
+		{
+		}
+		~FHuffman()
+		{
+			for( INT i=0; i<Child.Num(); i++ )
+				delete Child( i );
+		}
+		void PrependBit( BYTE B )
+		{
+			Bits.Insert( 0 );
+			Bits(0) = B;
+			for( INT i=0; i<Child.Num(); i++ )
+				Child(i)->PrependBit( B );
+		}
+		void WriteTable( FBitWriter& Writer )
+		{
+			Writer.WriteBit( Child.Num()!=0 );
+			if( Child.Num() )
+				for( INT i=0; i<Child.Num(); i++ )
+					Child(i)->WriteTable( Writer );
+			else
+			{
+				BYTE B = Ch;
+				Writer << B;
+			}
+		}
+		void ReadTable( FBitReader& Reader )
+		{
+			if( Reader.ReadBit() )
+			{
+				Child.Add( 2 );
+				for( INT i=0; i<Child.Num(); i++ )
+				{
+					Child( i ) = new FHuffman( -1 );
+					Child( i )->ReadTable( Reader );
+				}
+			}
+			else Ch = Arctor<BYTE>( Reader );
+		}
+	};
+	static QSORT_RETURN CDECL CompareHuffman( const FHuffman** A, const FHuffman** B )
+	{
+		return (*B)->Count - (*A)->Count;
+	}
+public:
+	UBOOL Encode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecHuffman::Encode);
+		INT SavedPos = In.Tell();
+		INT Total=0, i;
+
+		// Compute character frequencies.
+		TArray<FHuffman*> Huff(256);
+		for( i=0; i<256; i++ )
+			Huff(i) = new FHuffman(i);
+		TArray<FHuffman*> Index = Huff;
+		while( !In.AtEnd() )
+			Huff(Arctor<BYTE>(In))->Count++, Total++;
+		In.Seek( SavedPos );
+		Out << Total;
+
+		// Build compression table.
+		while( Huff.Num()>1 && Huff.Last()->Count==0 )
+			delete Huff.Pop();
+		INT BitCount = Huff.Num()*(8+1);
+		while( Huff.Num()>1 )
+		{
+			FHuffman* Node  = new FHuffman( -1 );
+			Node->Child.Add( 2 );
+			for( i=0; i<Node->Child.Num(); i++ )
+			{
+				Node->Child(i) = Huff.Pop();
+				Node->Child(i)->PrependBit(i);
+				Node->Count += Node->Child(i)->Count;
+			}
+			for( i=0; i<Huff.Num(); i++ )
+				if( Huff(i)->Count < Node->Count )
+					break;
+			Huff.Insert( i );
+			Huff( i ) = Node;
+			BitCount++;
+		}
+		FHuffman* Root = Huff.Pop();
+
+		// Calc stats.
+		while( !In.AtEnd() )
+			BitCount += Index(Arctor<BYTE>(In))->Bits.Num();
+		In.Seek( SavedPos );
+
+		// Save table and bitstream.
+		FBitWriter Writer( BitCount );
+		Root->WriteTable( Writer );
+		while( !In.AtEnd() )
+		{
+			FHuffman* P = Index(Arctor<BYTE>(In));
+			for( INT i=0; i<P->Bits.Num(); i++ )
+				Writer.WriteBit( P->Bits(i) );
+		}
+		check(!Writer.IsError());
+		check(Writer.GetNumBits()==BitCount);
+		Out.Serialize( Writer.GetData(), Writer.GetNumBytes() );
+
+		// Finish up.
+		delete Root;
+		return 0;
+
+		unguard;
+	}
+	UBOOL Decode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecHuffman::Decode);
+		INT Total;
+		In << Total;
+		TArray<BYTE> InArray( In.TotalSize()-In.Tell() );
+		In.Serialize( &InArray(0), InArray.Num() );
+		FBitReader Reader( &InArray(0), InArray.Num()*8 );
+		FHuffman Root(-1);
+		Root.ReadTable( Reader );
+		while( Total-- > 0 )
+		{
+			check(!Reader.AtEnd());
+			FHuffman* Node = &Root;
+			while( Node->Ch==-1 )
+				Node = Node->Child( Reader.ReadBit() );
+			BYTE B = Node->Ch;
+			Out << B;
+		}
+		return 1;
+		unguard;
+	}
+};
+
+/*-----------------------------------------------------------------------------
+	Move-to-front encoder.
+-----------------------------------------------------------------------------*/
+
+class FCodecMTF_fast : public FCodec
+{
+public:
+	UBOOL Encode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecMTF::Encode);
+		BYTE List[256], B, C;
+		INT i;
+		for( i=0; i<256; i++ )
+			List[i] = i;
+		while( !In.AtEnd() )
+		{
+			In << B;
+			for( i=0; i<256; i++ )
+				if( List[i]==B )
+					break;
+			check(i<256);
+			C = i;
+			Out << C;
+			INT NewPos=0;
+			for( i; i>NewPos; i-- )
+				List[i]=List[i-1];
+			List[NewPos] = B;
+		}
+		return 0;
+		unguard;
+	}
+	UBOOL Decode( FArchive& In, FArchive& Out )
+	{
+		guard(FCodecMTF::Decode);
+		BYTE List[256], B, C;
+		INT i;
+		for( i=0; i<256; i++ )
+			List[i] = i;
+		while( !In.AtEnd() )
+		{
+			In << B;
+			C = List[B];
+			Out << C;
+			INT NewPos=0;
+			for( i=B; i>NewPos; i-- )
+				List[i]=List[i-1];
+			List[NewPos] = C;
+		}
+		return 1;
+		unguard;
+	}
+};
+
+/*-----------------------------------------------------------------------------
 	Main.
 -----------------------------------------------------------------------------*/
 
@@ -377,16 +640,16 @@ int main( int argc, char* argv[] ) {
 			FString UFile;
 			FCodecFull Codec[2];
 
-			Codec[0].AddCodec(new FCodecRLE);
+			Codec[0].AddCodec(new FCodecRLE_fast);
 			Codec[0].AddCodec(new FCodecBWT_fast);
-			Codec[0].AddCodec(new FCodecMTF);
-			Codec[0].AddCodec(new FCodecHuffman);
+			Codec[0].AddCodec(new FCodecMTF_fast);
+			Codec[0].AddCodec(new FCodecHuffman_fast);
 
-			Codec[1].AddCodec(new FCodecRLE);
+			Codec[1].AddCodec(new FCodecRLE_fast);
 			Codec[1].AddCodec(new FCodecBWT_fast);
-			Codec[1].AddCodec(new FCodecMTF);
-			Codec[1].AddCodec(new FCodecRLE);
-			Codec[1].AddCodec(new FCodecHuffman);
+			Codec[1].AddCodec(new FCodecMTF_fast);
+			Codec[1].AddCodec(new FCodecRLE_fast);
+			Codec[1].AddCodec(new FCodecHuffman_fast);
 
 			if (Token == TEXT("COMPRESS")) {
 				bool newformat = false;
