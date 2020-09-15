@@ -362,15 +362,18 @@ public:
 		guard(FCodecRLE::Decode);
 		INT Count=0;
 		BYTE PrevChar=0, BufIn[BUF_SIZE];
+		TArray<BYTE>  BufOut_(BUF_SIZE*255/(RLE_LEAD+1) + 10);
+		BYTE* BufOut = &BufOut_(0);
 		INT Length = In.TotalSize();
 		while( Length > 0 )
 		{
 			INT BufLength = Min(Length, BUF_SIZE);
 			In.Serialize( BufIn, BufLength );
+			INT OutLength = 0;
 			for( INT j=0; j<BufLength; j++ )
 			{
 				BYTE B = BufIn[j];
-				Out << B;
+				BufOut[OutLength++] = B;
 				if( B!=PrevChar )
 				{
 					PrevChar = B;
@@ -386,11 +389,13 @@ public:
 						C = BufIn[++j];
 					}
 					check(C>=2);
-					while( C-->RLE_LEAD )
-						Out << B;
+					C -= RLE_LEAD;
+					memset(&BufOut[OutLength], B, C);					
+					OutLength += C;
 					Count = 0;
 				}
 			}
+			Out.Serialize( BufOut, OutLength );
 			Length -= BufLength;
 		}
 		return 1;
