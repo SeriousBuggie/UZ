@@ -564,17 +564,21 @@ public:
 		INT Pos = Reader.GetPosBits();
 		BYTE* Data = Reader.GetData();
 		INT TotalBits = Reader.GetNumBits();
-		while( Total-- > 0 )
-		{
-			check(TotalBits - Pos > 0);
+		TArray<BYTE> BufOut_(Total);
+		BYTE* BufOut = &BufOut_(0);
+		INT OutLength = 0;
+		while( OutLength < Total )
+		{	
 			FHuffman* Node = &Root;
 			while( Node->Ch==-1 ) {
 				Node = Node->Child[(Data[Pos>>3] & GShift[Pos&7]) != 0];
 				Pos++;
 			}
-			BYTE B = Node->Ch;
-			Out << B;
+			BufOut[OutLength++] = Node->Ch;
 		}
+		InArray.Empty();
+		Out.Serialize( BufOut, OutLength );
+		check(TotalBits - Pos >= 0);
 		return 1;
 		unguard;
 	}
