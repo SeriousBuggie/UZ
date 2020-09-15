@@ -262,6 +262,8 @@ public:
 		guard(FCodecBWT::Decode);
 		TArray<BYTE>  DecompressBuffer_(MAX_BUFFER_SIZE+1);
 		BYTE* DecompressBuffer = &DecompressBuffer_(0);
+		TArray<BYTE>  BufOut_(MAX_BUFFER_SIZE);
+		BYTE* BufOut = &BufOut_(0);
 		TArray<INT>  Temp_(MAX_BUFFER_SIZE+1);
 		INT*  Temp = &Temp_(0);
 		INT DecompressLength, DecompressCount[256+1], RunningTotal[256+1];
@@ -288,7 +290,8 @@ public:
 				Temp[RunningTotal[Index] + DecompressCount[Index]++] = i;
 			}
 			for( INT i=First,j=0 ; j<DecompressLength-1; i=Temp[i],j++ )
-				Out << DecompressBuffer[i];
+				BufOut[j] = DecompressBuffer[i];
+			Out.Serialize(BufOut, DecompressLength-1);
 		}
 		return 1;
 		unguard;
