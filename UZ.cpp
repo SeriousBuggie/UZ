@@ -338,22 +338,29 @@ public:
 	{
 		guard(FCodecRLE::Encode);
 		BYTE PrevChar=0, PrevCount=0, BufIn[BUF_SIZE];
+		TArray<BYTE>  BufOut_(BUF_SIZE*6/5 + 10);
+		BYTE* BufOut = &BufOut_(0);
 		INT Length = In.TotalSize();
 		while( Length > 0 )
 		{
 			INT BufLength = Min(Length, BUF_SIZE);
 			In.Serialize( BufIn, BufLength );
+			INT OutLength = 0;
 			for( INT j=0; j<BufLength; j++ )
 			{
 				BYTE B = BufIn[j];
 				if( B!=PrevChar || PrevCount==255 )
 				{
-					EncodeEmitRun( Out, PrevChar, PrevCount );
+					for( INT End=OutLength + Min<INT>(PrevCount,RLE_LEAD); OutLength < End;)
+						BufOut[OutLength++] = PrevChar;
+					if( PrevCount>=RLE_LEAD )
+						BufOut[OutLength++] = PrevCount;
 					PrevChar  = B;
 					PrevCount = 0;
 				}
 				PrevCount++;
 			}
+			Out.Serialize( BufOut, OutLength );
 			Length -= BufLength;
 		}
 		EncodeEmitRun( Out, PrevChar, PrevCount );
