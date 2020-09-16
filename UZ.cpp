@@ -75,13 +75,24 @@ typedef struct {
     TArray<BYTE> CompressBufferArray;
 	BYTE* CompressBuffer;
     INT CompressLength;
-	KeyPrefix* CompressPos;
+	INT First, Last;
+	TArray<BYTE>  BufOut_;
+	BYTE* BufOut;
 } BWTData;
 
 DWORD WINAPI BWTThread( LPVOID lpParam ) {
 	BWTData* Data = (BWTData*)lpParam;
 	if (Data->CompressLength > 0) {
-		Data->CompressPos = bwtsort(&Data->td, Data->CompressBuffer, Data->CompressLength);
+		KeyPrefix* CompressPos = bwtsort(&Data->td, Data->CompressBuffer, Data->CompressLength);
+		CompressPos[Data->CompressLength].offset = Data->CompressLength;
+		Data->First=0, Data->Last=0;
+		for(INT i=0; i<Data->CompressLength+1; i++ ) {
+			INT pos = CompressPos[i];
+			if( pos==1 ) Data->First = i;
+			else if( pos==0 ) Data->Last = i;
+			Data->BufOut[i] = Data->CompressBuffer[pos?pos-1:0];
+		}
+		free(CompressPos);
 	}
 	return 0;
 }
@@ -102,14 +113,13 @@ public:
 			FString Progress;
 		#endif
 
-		TArray<BYTE>  BufOut_(MAX_BUFFER_SIZE + 1);
-		BYTE* BufOut = &BufOut_(0);
-
 		HANDLE  hThreadArray[MAX_THREADS]; 
 		BWTData Data[MAX_THREADS];
 		for (INT t = 0; t < ThreadsCount; t++) {
 			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE);
 			Data[t].CompressBuffer = &Data[t].CompressBufferArray(0);
+			Data[t].BufOut_.Add(MAX_BUFFER_SIZE + 1);
+			Data[t].BufOut = &Data[t].BufOut_(0);
 		}
 
 		while( !In.AtEnd() )
@@ -127,17 +137,8 @@ public:
 			for (INT t = 0; t < ThreadsCount; t++) {
 				CloseHandle(hThreadArray[t]);
 				if (Data[t].CompressLength <= 0) continue;
-				Data[t].CompressPos[Data[t].CompressLength].offset = Data[t].CompressLength;
-				INT First=0, Last=0;
-				for(INT i=0; i<Data[t].CompressLength+1; i++ ) {
-					INT pos = Data[t].CompressPos[i];
-					if( pos==1 ) First = i;
-					else if( pos==0 ) Last = i;
-					BufOut[i] = Data[t].CompressBuffer[pos?pos-1:0];
-				}
-				free(Data[t].CompressPos);
-				Out << Data[t].CompressLength << First << Last;
-				Out.Serialize(BufOut, Data[t].CompressLength+1);
+				Out << Data[t].CompressLength << Data[t].First << Data[t].Last;
+				Out.Serialize(Data[t].BufOut, Data[t].CompressLength+1);
 			}
 
 			#ifdef SHOW_PROGRESS				
