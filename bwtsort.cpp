@@ -1,38 +1,20 @@
 #include <stdlib.h>
 #include <memory.h>
 
-//  these two values are stored together
-//  to improve processor cache hits
-
-typedef struct {
-    unsigned prefix, offset;
-} KeyPrefix;
-
-//  offset/key prefix
-//  for qsort to use
-
-KeyPrefix *Keys;
-unsigned *Rank;
-
-//  During the first round which qsorts the prefix into
-//  order, a groups of equal keys are chained together
-//  into work units for the next round, using
-//  the first two keys of the group
-
-unsigned WorkChain;
+#include "bwtsort.h"
 
 //  set the offset rankings and create
 //  new work units for unsorted groups
 //  of equal keys
 
-void bwtsetranks (unsigned from, unsigned cnt)
+void bwtsetranks (ThreadData* td, unsigned from, unsigned cnt)
 {
 unsigned idx = 0;
 
     // all members of a group get the same rank
 
     while( idx < cnt )
-        Rank[Keys[from+idx++].offset] = from;
+        td->Rank[td->Keys[from+idx++].offset] = from;
 
     // is this a sortable group?
 
@@ -42,21 +24,21 @@ unsigned idx = 0;
     // if so, add this group to work chain for next round
     // by using the first two key prefix from the group.
 
-    Keys[from].prefix = WorkChain;
-    Keys[from + 1].prefix = cnt;
-    WorkChain = from;
+    td->Keys[from].prefix = td->WorkChain;
+    td->Keys[from + 1].prefix = cnt;
+    td->WorkChain = from;
 }
 
 //  set the sort key (prefix) from the ranking of the offsets
 //  for rounds after the initial one.
 
-void bwtkeygroup (unsigned from, unsigned cnt, unsigned offset)
+void bwtkeygroup (ThreadData* td, unsigned from, unsigned cnt, unsigned offset)
 {
 unsigned off;
 
   while( cnt-- ) {
-    off = Keys[from].offset + offset;
-    Keys[from++].prefix = Rank[off];
+    off = td->Keys[from].offset + offset;
+    td->Keys[from++].prefix = td->Rank[off];
   }
 }
 
@@ -66,7 +48,7 @@ unsigned off;
 //  elements from [0:leq] and [heq:size]
 //  while partitioning a segment of the Keys
 
-void bwtpartition (unsigned start, unsigned size)
+void bwtpartition (ThreadData* td, unsigned start, unsigned size)
 {
 KeyPrefix tmp, pvt, *lo;
 unsigned loguy, higuy;
@@ -80,7 +62,7 @@ unsigned leq, heq;
     // the larger-of-three element goes to higuy
     // the smallest-of-three element goes to middle
 
-    lo = Keys + start;
+    lo = td->Keys + start;
     higuy = size - 1;
     leq = loguy = 0;
 
@@ -179,17 +161,17 @@ unsigned leq, heq;
     //  set the new group rank of the middle range [higuy:loguy-1]
     //  (the .lt. and .gt. ranges get set during their selection sorts)
 
-    bwtsetranks (start + higuy, loguy - higuy);
+    bwtsetranks (td, start + higuy, loguy - higuy);
 
     //  pick the smaller group to partition first,
     //  then loop with larger group.
 
     if( higuy < size - loguy ) {
-        bwtpartition (start, higuy);
+        bwtpartition (td, start, higuy);
         size -= loguy;
         start += loguy;
     } else {
-        bwtpartition (start + loguy, size - loguy);
+        bwtpartition (td, start + loguy, size - loguy);
         size = higuy;
     }
   }
@@ -201,15 +183,15 @@ unsigned leq, heq;
 
   while( size ) {
     for( leq = loguy = 0; ++loguy < size; )
-      if( Keys[start].prefix > Keys[start + loguy].prefix )
-        tmp = Keys[start], Keys[start] = Keys[start + loguy], Keys[start + loguy] = tmp, leq = 0;
-      else if( Keys[start].prefix == Keys[start + loguy].prefix )
+      if( td->Keys[start].prefix > td->Keys[start + loguy].prefix )
+        tmp = td->Keys[start], td->Keys[start] = td->Keys[start + loguy], td->Keys[start + loguy] = tmp, leq = 0;
+      else if( td->Keys[start].prefix == td->Keys[start + loguy].prefix )
        if( ++leq < loguy )
-        tmp = Keys[start + leq], Keys[start + leq] = Keys[start + loguy], Keys[start + loguy] = tmp;
+        tmp = td->Keys[start + leq], td->Keys[start + leq] = td->Keys[start + loguy], td->Keys[start + loguy] = tmp;
 
     //  now set the rank for the group of size >= 1
 
-    bwtsetranks (start, ++leq);
+    bwtsetranks (td, start, ++leq);
     start += leq;
     size -= leq;
    }
@@ -217,7 +199,7 @@ unsigned leq, heq;
 
 // the main entry point
 
-KeyPrefix* bwtsort (unsigned char *buff, unsigned size)
+KeyPrefix* bwtsort (ThreadData* td, unsigned char *buff, unsigned size)
 {
 unsigned start, cnt, chain;
 unsigned offset = 0, off;
@@ -225,7 +207,7 @@ unsigned prefix[1];
 
   //  the Key and Rank arrays include stopper elements
 
-  Keys = malloc ((size + 1 ) * sizeof(KeyPrefix));
+  td->Keys = (KeyPrefix*)malloc ((size + 1 ) * sizeof(KeyPrefix));
   memset (prefix, 0xff, sizeof(prefix));
 
   // construct the suffix sorting key for each offset
@@ -233,25 +215,25 @@ unsigned prefix[1];
   for( off = size; off--; ) {
     *prefix >>= 8;
     *prefix |= buff[off] << sizeof(prefix) * 8 - 8;
-    Keys[off].prefix = *prefix;
-    Keys[off].offset = off;
+    td->Keys[off].prefix = *prefix;
+    td->Keys[off].offset = off;
   }
 
   // the ranking of each suffix offset,
   // plus extra ranks for the stopper elements
 
-  Rank = malloc ((size + sizeof(prefix)) * sizeof(unsigned));
+  td->Rank = (unsigned*) malloc ((size + sizeof(prefix)) * sizeof(unsigned));
 
   // fill in the extra stopper ranks
 
   for( off = 0; off < sizeof(prefix); off++ )
-    Rank[size + off] = size + off;
+    td->Rank[size + off] = size + off;
 
   // perform the initial qsort based on the key prefix constructed
   // above.  Inialize the work unit chain terminator.
 
-  WorkChain = size;
-  bwtpartition (0, size);
+  td->WorkChain = size;
+  bwtpartition (td, 0, size);
 
   // the first pass used prefix keys constructed above,
   // subsequent passes use the offset rankings as keys
@@ -261,9 +243,9 @@ unsigned prefix[1];
   // continue doubling the key offset until there are no
   // undifferentiated suffix groups created during a run
 
-  while( WorkChain < size ) {
-    chain = WorkChain;
-    WorkChain = size;
+  while( td->WorkChain < size ) {
+    chain = td->WorkChain;
+    td->WorkChain = size;
 
     // consume the work units created last round
     // and preparing new work units for next pass
@@ -271,10 +253,10 @@ unsigned prefix[1];
 
     do {
       start = chain;
-      chain = Keys[start].prefix;
-      cnt = Keys[start + 1].prefix;
-      bwtkeygroup (start, cnt, offset);
-      bwtpartition (start, cnt);
+      chain = td->Keys[start].prefix;
+      cnt = td->Keys[start + 1].prefix;
+      bwtkeygroup (td, start, cnt, offset);
+      bwtpartition (td, start, cnt);
     } while( chain < size );
 
     //  each pass doubles the range of suffix considered,
@@ -285,9 +267,9 @@ unsigned prefix[1];
 
   //  return the rank of offset zero in the first key
 
-  Keys->prefix = Rank[0];
-  free (Rank);
-  return Keys;
+  td->Keys->prefix = td->Rank[0];
+  free (td->Rank);
+  return td->Keys;
 }
 
 #ifdef SORTSTANDALONE

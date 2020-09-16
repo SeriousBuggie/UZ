@@ -59,34 +59,32 @@ FFeedbackContextAnsi Warn;
 	FFileManagerAnsi FileManager;
 #endif
 
-#define COMMENT SLASH(/)
-#define SLASH(s) /##s
-
-//#define delete COMMENT delete
+INT ThreadsCount;
 
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
 -----------------------------------------------------------------------------*/
+// use https://sourceforge.net/projects/bwtcoder/files/bwtcoder/preliminary-2/
 
-#define USE_qsort 0 // AS UCC does
-#define USE_sort 1 // use qsort mixed with heapsort after some depth, which slower from qsort
-#define USE_stable_sort 2 // use merge sort, which faster from qsort
-#define USE_bwtsort 3 // use https://sourceforge.net/projects/bwtcoder/files/bwtcoder/preliminary-2/ - best
-
-#define USE_SORT USE_bwtsort 
+#define MAX_THREADS 32
 
 #define SHOW_PROGRESS
 
-//#define DBG
+typedef struct {
+	ThreadData td;
+    TArray<BYTE> CompressBufferArray;
+	BYTE* CompressBuffer;
+    INT CompressLength;
+	KeyPrefix* CompressPos;
+} BWTData;
 
-#ifdef DBG
-	class FMeasure {
-	public:
-		INT P1, P2;
-		FMeasure();
-		~FMeasure();
-	};
-#endif
+DWORD WINAPI BWTThread( LPVOID lpParam ) {
+	BWTData* Data = (BWTData*)lpParam;
+	if (Data->CompressLength > 0) {
+		Data->CompressPos = bwtsort(&Data->td, Data->CompressBuffer, Data->CompressLength);
+	}
+	return 0;
+}
 
 INT RealBufferSize = 0x40000;
 
@@ -94,144 +92,53 @@ class FCodecBWT_fast : public FCodec
 {
 private:
 	enum {MAX_BUFFER_SIZE=0x40000}; /* Hand tuning suggests this is an ideal size */
-	static BYTE* CompressBuffer;
-	static INT CompressLength;
-	#if (USE_SORT == USE_stable_sort || USE_SORT == USE_sort)
-		static bool ClampedBufferCompare2( const INT P1, const INT P2 )
-		{
-			guardSlow(FCodecBWT::ClampedBufferCompare);
-			#ifdef DBG
-				FMeasure Measure;
-				Measure.P1 = P1;
-				Measure.P2 = P2;
-			#endif
-
-			BYTE* B1 = CompressBuffer + P1;
-			BYTE* B2 = CompressBuffer + P2;
-
-			// fastest
-			int ret = memcmp(B1, B2, CompressLength - Max(P1, P2));
-			return ret == 0 ? P1 < P2 : ret < 0;
-
-			unguardSlow;
-		}
-	#elif (USE_SORT == USE_qsort)
-		static INT ClampedBufferCompare( const INT* P1, const INT* P2 )
-		{
-			guardSlow(FCodecBWT::ClampedBufferCompare);
-			#ifdef DBG
-				FMeasure Measure;
-				Measure.P1 = *P1;
-				Measure.P2 = *P2;
-			#endif
-
-			BYTE* B1 = CompressBuffer + *P1;
-			BYTE* B2 = CompressBuffer + *P2;
-
-			// fastest
-			INT ret = memcmp(B1, B2, CompressLength - Max(*P1,*P2));
-			return ret == 0 ? *P1 - *P2 : ret;
-
-			// average
-			INT ret2 = appMemcmp(B1, B2, CompressLength - Max(*P1,*P2));
-			return ret2 == 0 ? *P1 - *P2 : ret2;
-
-			// average
-			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-				INT B = *B1 - *B2;
-				if (B == 0) continue;
-				return B;
-			}
-			return *P1 - *P2; 
-
-			// slow
-			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-				BYTE _B1 = *B1;
-				BYTE _B2 = *B2;
-				if (_B1 == _B2) continue;
-				return _B1 < _B2 ? -1 : 1;
-			}
-			return *P1 - *P2; 
-
-			// slowest, original
-			for( INT Count=CompressLength-Max(*P1,*P2); Count>0; Count--,B1++,B2++ ) {
-				if( *B1 < *B2 )
-					return -1;
-				else if( *B1 > *B2 )
-					return 1;
-			}
-			return *P1 - *P2;
-
-			unguardSlow;
-		}
-	#endif
 public:
-	#ifdef DBG
-		static FLOAT TotalTime;
-		static FTime StartTime;
-		static INT Count;
-	#endif
-
 	UBOOL Encode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecBWT::Encode);
-
-		#ifdef DBG
-			TotalTime = 0.f;
-			Count = 0;
-		#endif
 
 		#ifdef SHOW_PROGRESS			
 			Warn.LocalPrint(TEXT("0%"));
 			FString Progress;
 		#endif
 
-		TArray<BYTE> CompressBufferArray(MAX_BUFFER_SIZE);
-		CompressBuffer = &CompressBufferArray(0);
-		#if (USE_SORT == USE_bwtsort)
-			KeyPrefix* CompressPos;
-		#else
-			TArray<INT>  CompressPosition   (MAX_BUFFER_SIZE+1);
-			INT* CompressPos = &CompressPosition(0);
-		#endif		
-		INT i, First=0, Last=0;
+		TArray<BYTE>  BufOut_(MAX_BUFFER_SIZE + 1);
+		BYTE* BufOut = &BufOut_(0);
+
+		HANDLE  hThreadArray[MAX_THREADS]; 
+		BWTData Data[MAX_THREADS];
+		for (INT t = 0; t < ThreadsCount; t++) {
+			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE);
+			Data[t].CompressBuffer = &Data[t].CompressBufferArray(0);
+		}
+
 		while( !In.AtEnd() )
 		{
-			#ifdef DBG
-				TotalTime = 0.f;
-				Count = 0;
-			#endif
-			CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
-			CompressLength = Min<INT>( CompressLength, RealBufferSize ); // reduce buffer for avoid slow down
-			In.Serialize( CompressBuffer, CompressLength );
-			#if (USE_SORT != USE_bwtsort)
-				for( i=0; i<CompressLength+1; i++ ) CompressPos[i] = i;
-			#endif
-			#if (USE_SORT == USE_stable_sort)
-				std::stable_sort(&CompressPos[0], &CompressPos[CompressLength], ClampedBufferCompare2);
-			#elif (USE_SORT == USE_sort)
-				std::sort(&CompressPos[0], &CompressPos[CompressLength], ClampedBufferCompare2);
-			#elif (USE_SORT == USE_qsort)
-				appQsort( &CompressPos[0], CompressLength+1, sizeof(INT), (QSORT_COMPARE)ClampedBufferCompare );
-			#elif (USE_SORT == USE_bwtsort)
-				CompressPos = bwtsort(CompressBuffer, CompressLength);
-				CompressPos[CompressLength].offset = CompressLength;
-			#endif
-			for( i=0; i<CompressLength+1; i++ ) {
-				INT pos = CompressPos[i];
-				if( pos==1 )
-					First = i;
-				else if( pos==0 )
-					Last = i;
+			for (INT t = 0; t < ThreadsCount; t++) {
+				Data[t].CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
+				Data[t].CompressLength = Min<INT>( Data[t].CompressLength, RealBufferSize ); // reduce buffer for avoid slow down
+				In.Serialize( Data[t].CompressBuffer, Data[t].CompressLength );
+
+				hThreadArray[t] = CreateThread(NULL, 0, BWTThread, &Data[t], 0, NULL);
 			}
-			Out << CompressLength << First << Last;
-			for( i=0; i<CompressLength+1; i++ ) {
-				INT pos = CompressPos[i];
-				Out << CompressBuffer[pos?pos-1:0];
+
+			WaitForMultipleObjects(ThreadsCount, hThreadArray, TRUE, INFINITE);
+
+			for (INT t = 0; t < ThreadsCount; t++) {
+				CloseHandle(hThreadArray[t]);
+				if (Data[t].CompressLength <= 0) continue;
+				Data[t].CompressPos[Data[t].CompressLength].offset = Data[t].CompressLength;
+				INT First=0, Last=0;
+				for(INT i=0; i<Data[t].CompressLength+1; i++ ) {
+					INT pos = Data[t].CompressPos[i];
+					if( pos==1 ) First = i;
+					else if( pos==0 ) Last = i;
+					BufOut[i] = Data[t].CompressBuffer[pos?pos-1:0];
+				}
+				free(Data[t].CompressPos);
+				Out << Data[t].CompressLength << First << Last;
+				Out.Serialize(BufOut, Data[t].CompressLength+1);
 			}
-			#if (USE_SORT == USE_bwtsort)
-				free(CompressPos);
-			#endif
 
 			#ifdef SHOW_PROGRESS				
 				Warn.LocalPrint(*FString::Printf(
@@ -241,17 +148,10 @@ public:
 						TEXT("\r")
 					#endif
 					TEXT("%.3f%%"), 100.f*In.Tell()/In.TotalSize()));
-				#ifdef DBG
-					Warn.LocalPrint(*FString::Printf(TEXT("\t %i\t %f"), Count, TotalTime));
-				#endif
 			#endif
 		}
 		#ifdef SHOW_PROGRESS
 			Warn.LocalPrint(TEXT("\r"));
-		#endif
-
-		#ifdef DBG
-			GWarn->Logf(TEXT("DBG: %f secs on %i times"), TotalTime, Count);
 		#endif
 
 		return 0;
@@ -297,24 +197,6 @@ public:
 		unguard;
 	}
 };
-BYTE* FCodecBWT_fast::CompressBuffer;
-INT   FCodecBWT_fast::CompressLength;
-
-#ifdef DBG
-	FLOAT FCodecBWT_fast::TotalTime;
-	FTime FCodecBWT_fast::StartTime;
-	INT   FCodecBWT_fast::Count;
-	FMeasure::FMeasure() {
-		FCodecBWT_fast::StartTime = appSeconds();
-	};
-	FMeasure::~FMeasure() {		
-		FCodecBWT_fast::StartTime = appSeconds() - FCodecBWT_fast::StartTime; 
-		FLOAT time = FCodecBWT_fast::StartTime.GetFloat();
-		FCodecBWT_fast::TotalTime += time;
-		FCodecBWT_fast::Count++;
-		//if (time > 0.01) Warn.LocalPrint(*FString::Printf(TEXT("%f\t%i\t%i\n"), time, P1, P2));
-	};
-#endif
 
 #define BUF_SIZE 0x10000
 
@@ -711,6 +593,13 @@ int main( int argc, char* argv[] ) {
 				*app,
 				RealBufferSize);
 		} else {
+			{
+				SYSTEM_INFO sysinfo;
+				GetSystemInfo(&sysinfo);
+				ThreadsCount = Max<INT>(1, Min<INT>(sysinfo.dwNumberOfProcessors, MAX_THREADS));
+				Warn.Logf(TEXT("Used %d threads."), ThreadsCount);
+			}
+
 			int last = argc - 1;
 			FString CFile;
 			FString UFile;
