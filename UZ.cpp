@@ -71,19 +71,22 @@ INT ThreadsCount;
 #define SHOW_PROGRESS
 
 typedef struct {
-	ThreadData td;
+	BOOL Encode;
     TArray<BYTE> CompressBufferArray;
 	BYTE* CompressBuffer;
     INT CompressLength;
 	INT First, Last;
+	TArray<INT>  Temp_;
+	INT*  Temp;
 	TArray<BYTE>  BufOut_;
 	BYTE* BufOut;
 } BWTData;
 
 DWORD WINAPI BWTThread( LPVOID lpParam ) {
 	BWTData* Data = (BWTData*)lpParam;
-	if (Data->CompressLength > 0) {
-		KeyPrefix* CompressPos = bwtsort(&Data->td, Data->CompressBuffer, Data->CompressLength);
+	if (Data->Encode) {
+		ThreadData td;
+		KeyPrefix* CompressPos = bwtsort(&td, Data->CompressBuffer, Data->CompressLength);
 		CompressPos[Data->CompressLength].offset = Data->CompressLength;
 		Data->First=0, Data->Last=0;
 		for(INT i=0; i<Data->CompressLength+1; i++ ) {
@@ -93,6 +96,25 @@ DWORD WINAPI BWTThread( LPVOID lpParam ) {
 			Data->BufOut[i] = Data->CompressBuffer[pos?pos-1:0];
 		}
 		free(CompressPos);
+	} else {
+		INT DecompressCount[256+1], RunningTotal[256+1];
+		memset(&DecompressCount[0], 0, sizeof(DecompressCount));
+		for( INT i=0; i<Data->CompressLength; i++ )
+			DecompressCount[ i!=Data->Last ? Data->CompressBuffer[i] : 256 ]++;
+		INT Sum = 0;
+		for( INT i=0; i<257; i++ )
+		{
+			RunningTotal[i] = Sum;
+			Sum += DecompressCount[i];
+			DecompressCount[i] = 0;
+		}
+		for( INT i=0; i<Data->CompressLength; i++ )
+		{
+			INT Index = i!=Data->Last ? Data->CompressBuffer[i] : 256;
+			Data->Temp[RunningTotal[Index] + DecompressCount[Index]++] = i;
+		}
+		for( INT i=Data->First,j=0 ; j<Data->CompressLength-1; i=Data->Temp[i],j++ )
+			Data->BufOut[j] = Data->CompressBuffer[i];
 	}
 	return 0;
 }
@@ -116,6 +138,7 @@ public:
 		HANDLE  hThreadArray[MAX_THREADS]; 
 		BWTData Data[MAX_THREADS];
 		for (INT t = 0; t < ThreadsCount; t++) {
+			Data[t].Encode = true;
 			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE);
 			Data[t].CompressBuffer = &Data[t].CompressBufferArray(0);
 			Data[t].BufOut_.Add(MAX_BUFFER_SIZE + 1);
@@ -124,19 +147,23 @@ public:
 
 		while( !In.AtEnd() )
 		{
+			INT Threads = ThreadsCount;
 			for (INT t = 0; t < ThreadsCount; t++) {
 				Data[t].CompressLength = Min<INT>( In.TotalSize()-In.Tell(), MAX_BUFFER_SIZE );
 				Data[t].CompressLength = Min<INT>( Data[t].CompressLength, RealBufferSize ); // reduce buffer for avoid slow down
+				if (Data[t].CompressLength <= 0) {
+					Threads = t;
+					break;
+				}
 				In.Serialize( Data[t].CompressBuffer, Data[t].CompressLength );
 
 				hThreadArray[t] = CreateThread(NULL, 0, BWTThread, &Data[t], 0, NULL);
 			}
 
-			WaitForMultipleObjects(ThreadsCount, hThreadArray, TRUE, INFINITE);
+			WaitForMultipleObjects(Threads, hThreadArray, TRUE, INFINITE);
 
-			for (INT t = 0; t < ThreadsCount; t++) {
+			for (INT t = 0; t < Threads; t++) {
 				CloseHandle(hThreadArray[t]);
-				if (Data[t].CompressLength <= 0) continue;
 				Out << Data[t].CompressLength << Data[t].First << Data[t].Last;
 				Out.Serialize(Data[t].BufOut, Data[t].CompressLength+1);
 			}
@@ -161,38 +188,41 @@ public:
 	UBOOL Decode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecBWT::Decode);
-		TArray<BYTE>  DecompressBuffer_(MAX_BUFFER_SIZE+1);
-		BYTE* DecompressBuffer = &DecompressBuffer_(0);
-		TArray<BYTE>  BufOut_(MAX_BUFFER_SIZE);
-		BYTE* BufOut = &BufOut_(0);
-		TArray<INT>  Temp_(MAX_BUFFER_SIZE+1);
-		INT*  Temp = &Temp_(0);
-		INT DecompressLength, DecompressCount[256+1], RunningTotal[256+1];
+
+		HANDLE  hThreadArray[MAX_THREADS]; 
+		BWTData Data[MAX_THREADS];
+		for (INT t = 0; t < ThreadsCount; t++) {
+			Data[t].Encode = false;
+			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE + 1);
+			Data[t].CompressBuffer = &Data[t].CompressBufferArray(0);
+			Data[t].Temp_.Add(MAX_BUFFER_SIZE + 1);
+			Data[t].Temp = &Data[t].Temp_(0);
+			Data[t].BufOut_.Add(MAX_BUFFER_SIZE);
+			Data[t].BufOut = &Data[t].BufOut_(0);
+		}
+
 		while( !In.AtEnd() )
 		{
-			INT First, Last;
-			In << DecompressLength << First << Last;
-			check(DecompressLength<=MAX_BUFFER_SIZE+1);
-			check(DecompressLength<=In.TotalSize()-In.Tell());
-			In.Serialize( &DecompressBuffer[0], ++DecompressLength );
-			memset(&DecompressCount[0], 0, sizeof(DecompressCount));
-			for( INT i=0; i<DecompressLength; i++ )
-				DecompressCount[ i!=Last ? DecompressBuffer[i] : 256 ]++;
-			INT Sum = 0;
-			for( INT i=0; i<257; i++ )
-			{
-				RunningTotal[i] = Sum;
-				Sum += DecompressCount[i];
-				DecompressCount[i] = 0;
+			INT Threads = ThreadsCount;
+			for (INT t = 0; t < ThreadsCount; t++) {
+				if (In.AtEnd()) {
+					Threads = t;
+					break;
+				}
+				In << Data[t].CompressLength << Data[t].First << Data[t].Last;
+				check(Data[t].CompressLength<=MAX_BUFFER_SIZE+1);
+				check(Data[t].CompressLength<=In.TotalSize()-In.Tell());
+				In.Serialize( &Data[t].CompressBuffer[0], ++Data[t].CompressLength );
+
+				hThreadArray[t] = CreateThread(NULL, 0, BWTThread, &Data[t], 0, NULL);
 			}
-			for( INT i=0; i<DecompressLength; i++ )
-			{
-				INT Index = i!=Last ? DecompressBuffer[i] : 256;
-				Temp[RunningTotal[Index] + DecompressCount[Index]++] = i;
+
+			WaitForMultipleObjects(Threads, hThreadArray, TRUE, INFINITE);
+
+			for (INT t = 0; t < Threads; t++) {
+				CloseHandle(hThreadArray[t]);
+				Out.Serialize(Data[t].BufOut, Data[t].CompressLength-1);
 			}
-			for( INT i=First,j=0 ; j<DecompressLength-1; i=Temp[i],j++ )
-				BufOut[j] = DecompressBuffer[i];
-			Out.Serialize(BufOut, DecompressLength-1);
 		}
 		return 1;
 		unguard;
