@@ -264,14 +264,17 @@ public:
 				BYTE B = BufIn[j];
 				if( B!=PrevChar || PrevCount==255 )
 				{
-					for( INT End=OutLength + Min<INT>(PrevCount,RLE_LEAD); OutLength < End;)
+					if (PrevCount == 1) {
 						BufOut[OutLength++] = PrevChar;
-					if( PrevCount>=RLE_LEAD )
-						BufOut[OutLength++] = PrevCount;
+					} else {
+						for( INT End=OutLength + Min<INT>(PrevCount,RLE_LEAD); OutLength < End;)
+							BufOut[OutLength++] = PrevChar;
+						if( PrevCount>=RLE_LEAD )
+							BufOut[OutLength++] = PrevCount;
+					}
 					PrevChar  = B;
-					PrevCount = 0;
-				}
-				PrevCount++;
+					PrevCount = 1;
+				} else PrevCount++;
 			}
 			Out.Serialize( BufOut, OutLength );
 			Length -= BufLength;
