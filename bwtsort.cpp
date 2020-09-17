@@ -7,7 +7,7 @@
 //  new work units for unsorted groups
 //  of equal keys
 
-void bwtsetranks (ThreadData* td, unsigned from, unsigned cnt)
+inline void bwtsetranks (ThreadData* td, unsigned from, unsigned cnt)
 {
 unsigned idx = 0;
 
@@ -32,7 +32,7 @@ unsigned idx = 0;
 //  set the sort key (prefix) from the ranking of the offsets
 //  for rounds after the initial one.
 
-void bwtkeygroup (ThreadData* td, unsigned from, unsigned cnt, unsigned offset)
+inline void bwtkeygroup (ThreadData* td, unsigned from, unsigned cnt, unsigned offset)
 {
 unsigned off;
 
@@ -48,7 +48,7 @@ unsigned off;
 //  elements from [0:leq] and [heq:size]
 //  while partitioning a segment of the Keys
 
-void bwtpartition (ThreadData* td, unsigned start, unsigned size)
+inline void bwtpartition (ThreadData* td, unsigned start, unsigned size)
 {
 KeyPrefix tmp, pvt, *lo;
 unsigned loguy, higuy;
@@ -75,16 +75,19 @@ unsigned leq, heq;
 
     //  move larger of tmp,hi and mid to hi
 
-    if( lo[size >> 1].prefix > tmp.prefix )
-        lo[higuy] = lo[size >> 1], lo[size >> 1] = tmp;
+	{
+		unsigned size_1 = size >> 1;
+		if( lo[size_1].prefix > tmp.prefix )
+			lo[higuy] = lo[size_1], lo[size_1] = tmp;
 
-    //  move larger of mid and lo to pvt,lo
-    //  and the smaller into the middle
+		//  move larger of mid and lo to pvt,lo
+		//  and the smaller into the middle
 
-    pvt = *lo;
-
-    if( pvt.prefix < lo[size >> 1].prefix )
-        *lo = lo[size >> 1], lo[size >> 1] = pvt, pvt = *lo;
+		pvt = *lo;
+		
+		if( pvt.prefix < lo[size_1].prefix )
+			*lo = lo[size_1], lo[size_1] = pvt, pvt = *lo;
+	}
 
     //  start the high group of equals
     //  with a pivot valued element, or not
@@ -94,7 +97,7 @@ unsigned leq, heq;
     else
         heq = size;
 
-    for( ; ; ) {
+    while (true) {
         //  both higuy and loguy are already in position
         //  loguy leaves .le. elements beneath it
         //  and swaps equal to pvt elements to leq
@@ -182,12 +185,16 @@ unsigned leq, heq;
   //  for it at leq
 
   while( size ) {
-    for( leq = loguy = 0; ++loguy < size; )
-      if( td->Keys[start].prefix > td->Keys[start + loguy].prefix )
-        tmp = td->Keys[start], td->Keys[start] = td->Keys[start + loguy], td->Keys[start + loguy] = tmp, leq = 0;
-      else if( td->Keys[start].prefix == td->Keys[start + loguy].prefix )
-       if( ++leq < loguy )
-        tmp = td->Keys[start + leq], td->Keys[start + leq] = td->Keys[start + loguy], td->Keys[start + loguy] = tmp;
+    for( leq = loguy = 0; ++loguy < size; ) {
+		unsigned start_loguy = start + loguy;
+      if( td->Keys[start].prefix > td->Keys[start_loguy].prefix )
+        tmp = td->Keys[start], td->Keys[start] = td->Keys[start_loguy], td->Keys[start_loguy] = tmp, leq = 0;
+      else if( td->Keys[start].prefix == td->Keys[start_loguy].prefix )
+       if( ++leq < loguy ) {
+		   unsigned start_leq = start + leq;
+        tmp = td->Keys[start_leq], td->Keys[start_leq] = td->Keys[start_loguy], td->Keys[start_loguy] = tmp;
+	   }
+	}
 
     //  now set the rank for the group of size >= 1
 
