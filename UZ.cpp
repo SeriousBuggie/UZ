@@ -628,6 +628,7 @@ int main( int argc, char* argv[] ) {
 				SYSTEM_INFO sysinfo;
 				GetSystemInfo(&sysinfo);
 				ThreadsCount = Max<INT>(1, Min<INT>(sysinfo.dwNumberOfProcessors, MAX_THREADS));
+				//ThreadsCount = 1; // dbg
 				Warn.Logf(TEXT("Used %d threads."), ThreadsCount);
 			}
 
