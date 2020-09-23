@@ -15,6 +15,10 @@ This tool produce fully compatible .uz file. No need ucc.exe.
 
 Compressed faster in 100-700 times.
 
-bwtsort taken from https://sourceforge.net/projects/bwtcoder/files/bwtcoder/preliminary-2/
+bwtsort taken from https://sourceforge.net/projects/bwtcoder/
+
+sais taken from https://sites.google.com/site/yuta256/sais
 
 Thanks Mc.Gugi for uzLib (not used but very helpful).
+
+Thanks Eternity for investigate why sais produce different results.
