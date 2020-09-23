@@ -29,7 +29,7 @@
 #include "sais.h"
 
 #ifndef UCHAR_SIZE
-# define UCHAR_SIZE 256
+# define UCHAR_SIZE (256 + 1)
 #endif
 #ifndef MINBUCKETSIZE
 # define MINBUCKETSIZE 256
@@ -41,7 +41,7 @@
 
 #define SAIS_MYMALLOC(_num, _type) ((_type *)malloc((_num) * sizeof(_type)))
 #define SAIS_MYFREE(_ptr, _num, _type) free((_ptr))
-#define chr(_a) (cs == sizeof(sais_index_type) ? ((sais_index_type *)T)[(_a)] : ((unsigned char *)T)[(_a)])
+#define chr(_a) (cs == sizeof(sais_index_type) ? ((sais_index_type *)T)[(_a)] : ( ((_a) == (n-1)) ? 256 :  ((unsigned char *)T)[(_a)]) )
 
 /* find the start or end of each bucket */
 static
