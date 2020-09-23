@@ -12,7 +12,7 @@
 #include <FCodec.h>
 //#include <Engine.h>
 
-#include "bwtsort.h"
+#include "sais.h"
 
 INT GFilesOpen, GFilesOpened;
 
@@ -64,7 +64,6 @@ INT ThreadsCount;
 /*-----------------------------------------------------------------------------
 	Burrows-Wheeler inspired data compressor.
 -----------------------------------------------------------------------------*/
-// use https://sourceforge.net/projects/bwtcoder/files/bwtcoder/preliminary-2/
 
 #define MAX_THREADS 32
 
@@ -85,17 +84,15 @@ typedef struct {
 DWORD WINAPI BWTThread( LPVOID lpParam ) {
 	BWTData* Data = (BWTData*)lpParam;
 	if (Data->Encode) {
-		ThreadData td;
-		KeyPrefix* CompressPos = bwtsort(&td, Data->CompressBuffer, Data->CompressLength);
-		CompressPos[Data->CompressLength].offset = Data->CompressLength;
-		Data->First=0, Data->Last=0;
-		for(INT i=0; i<Data->CompressLength+1; i++ ) {
-			INT pos = CompressPos[i];
-			if( pos==1 ) Data->First = i;
-			else if( pos==0 ) Data->Last = i;
-			Data->BufOut[i] = Data->CompressBuffer[pos?pos-1:0];
+		int ret = sais(Data->CompressBuffer, Data->Temp, Data->CompressLength + 1);
+		Data->Temp[Data->CompressLength] = Data->CompressLength;
+		Data->First = 0, Data->Last = 0;
+		for (INT i = 0; i < Data->CompressLength + 1; i++) {
+			INT pos = Data->Temp[i];
+			if (pos == 1) Data->First = i;
+			else if (pos == 0) Data->Last = i;
+			Data->BufOut[i] = Data->CompressBuffer[pos ? pos - 1 : 0];
 		}
-		free(CompressPos);
 	} else {
 		INT DecompressCount[256+1], RunningTotal[256+1];
 		memset(&DecompressCount[0], 0, sizeof(DecompressCount));
@@ -139,8 +136,10 @@ public:
 		BWTData Data[MAX_THREADS];
 		for (INT t = 0; t < ThreadsCount; t++) {
 			Data[t].Encode = true;
-			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE);
+			Data[t].CompressBufferArray.Add(MAX_BUFFER_SIZE + 1);
 			Data[t].CompressBuffer = &Data[t].CompressBufferArray(0);
+			Data[t].Temp_.Add(MAX_BUFFER_SIZE + 1);
+			Data[t].Temp = &Data[t].Temp_(0);
 			Data[t].BufOut_.Add(MAX_BUFFER_SIZE + 1);
 			Data[t].BufOut = &Data[t].BufOut_(0);
 		}
