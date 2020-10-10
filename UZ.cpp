@@ -3,14 +3,16 @@
 #else
 	#include <errno.h>
 	#include <sys/stat.h>
+	#include <pthread.h>
+	#include <sys/sysinfo.h>
 #endif
+#include <wchar.h>
 #include <malloc.h>
 #include <stdio.h>
-#include <algorithm>
+#include <stdlib.h>
 
 #include <Core.h>
 #include <FCodec.h>
-//#include <Engine.h>
 
 #include "divsufsort.h"
 
@@ -69,6 +71,10 @@ INT ThreadsCount;
 
 #define SHOW_PROGRESS
 
+#ifndef BOOL
+	typedef int                 BOOL;
+#endif // !BOOL
+
 typedef struct {
 	BOOL Encode;
     TArray<BYTE> CompressBufferArray;
@@ -81,8 +87,7 @@ typedef struct {
 	BYTE* BufOut;
 } BWTData;
 
-DWORD WINAPI BWTThread( LPVOID lpParam ) {
-	BWTData* Data = (BWTData*)lpParam;
+void BWTThread(BWTData* Data) {
 	if (Data->Encode) {
 		Data->CompressBuffer[Data->CompressLength] = 255;
 		int ret = divsufsort(Data->CompressBuffer, Data->Temp, Data->CompressLength + 1);
@@ -114,8 +119,33 @@ DWORD WINAPI BWTThread( LPVOID lpParam ) {
 		for( INT i=Data->First,j=0 ; j<Data->CompressLength-1; i=Data->Temp[i],j++ )
 			Data->BufOut[j] = Data->CompressBuffer[i];
 	}
-	return 0;
 }
+
+#if WIN32
+	DWORD WINAPI WinThread( LPVOID lpParam ) {
+		BWTThread((BWTData*)lpParam);
+		return 0;
+	}
+	#define ThreadHandle HANDLE
+	#define CreateThread(t) hThreadArray[t] = CreateThread(NULL, 0, WinThread, &Data[t], 0, NULL);
+	#define WaitThreads WaitForMultipleObjects(Threads, hThreadArray, TRUE, INFINITE);
+	#define FreeThread(t) CloseHandle(hThreadArray[t]);
+#else
+	void* PThread(void* param) {
+		BWTThread((BWTData*)param);
+		pthread_exit(0);
+	}
+	#define ThreadHandle pthread_t 
+	#define CreateThread(t) \
+		pthread_attr_t attr;\
+		pthread_attr_init(&attr);\
+		pthread_create(&hThreadArray[t], &attr, PThread, &Data[t]);\
+		pthread_attr_destroy(&attr);
+	#define WaitThreads for (INT t = 0; t < Threads; t++) pthread_join(hThreadArray[t], NULL);
+	#define FreeThread(t) /* nothing */;
+
+	#define wcstol strtol
+#endif
 
 INT RealBufferSize = 0x40000;
 
@@ -133,7 +163,7 @@ public:
 			FString Progress;
 		#endif
 
-		HANDLE  hThreadArray[MAX_THREADS]; 
+		ThreadHandle  hThreadArray[MAX_THREADS];
 		BWTData Data[MAX_THREADS];
 		for (INT t = 0; t < ThreadsCount; t++) {
 			Data[t].Encode = true;
@@ -157,13 +187,13 @@ public:
 				}
 				In.Serialize( Data[t].CompressBuffer, Data[t].CompressLength );
 
-				hThreadArray[t] = CreateThread(NULL, 0, BWTThread, &Data[t], 0, NULL);
+				CreateThread(t);
 			}
 
-			WaitForMultipleObjects(Threads, hThreadArray, TRUE, INFINITE);
+			WaitThreads;
 
 			for (INT t = 0; t < Threads; t++) {
-				CloseHandle(hThreadArray[t]);
+				FreeThread(t);
 				Out << Data[t].CompressLength << Data[t].First << Data[t].Last;
 				Out.Serialize(Data[t].BufOut, Data[t].CompressLength+1);
 			}
@@ -189,7 +219,7 @@ public:
 	{
 		guard(FCodecBWT::Decode);
 
-		HANDLE  hThreadArray[MAX_THREADS]; 
+		ThreadHandle  hThreadArray[MAX_THREADS];
 		BWTData Data[MAX_THREADS];
 		for (INT t = 0; t < ThreadsCount; t++) {
 			Data[t].Encode = false;
@@ -214,13 +244,13 @@ public:
 				check(Data[t].CompressLength<=In.TotalSize()-In.Tell());
 				In.Serialize( &Data[t].CompressBuffer[0], ++Data[t].CompressLength );
 
-				hThreadArray[t] = CreateThread(NULL, 0, BWTThread, &Data[t], 0, NULL);
+				CreateThread(t);
 			}
 
-			WaitForMultipleObjects(Threads, hThreadArray, TRUE, INFINITE);
+			WaitThreads;
 
 			for (INT t = 0; t < Threads; t++) {
-				CloseHandle(hThreadArray[t]);
+				FreeThread(t);
 				Out.Serialize(Data[t].BufOut, Data[t].CompressLength-1);
 			}
 		}
@@ -628,12 +658,16 @@ int main( int argc, char* argv[] ) {
 				RealBufferSize);
 		} else {
 			{
-				SYSTEM_INFO sysinfo;
-				GetSystemInfo(&sysinfo);
-				ThreadsCount = Max<INT>(1, Min<INT>(sysinfo.dwNumberOfProcessors, MAX_THREADS));
-				//ThreadsCount = 1; // dbg
-				Warn.Logf(TEXT("Used %d threads."), ThreadsCount);
+				#if WIN32
+					SYSTEM_INFO sysinfo;
+					GetSystemInfo(&sysinfo);
+					ThreadsCount = Max<INT>(1, Min<INT>(sysinfo.dwNumberOfProcessors, MAX_THREADS));					
+				#else
+				ThreadsCount = get_nprocs();
+				#endif
 			}
+			//ThreadsCount = 1; // dbg
+			Warn.Logf(TEXT("Used %d threads."), ThreadsCount);
 
 			int last = argc - 1;
 			FString CFile;
