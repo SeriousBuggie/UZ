@@ -19,6 +19,8 @@ bwtsort taken from https://sourceforge.net/projects/bwtcoder/
 
 sais taken from https://sites.google.com/site/yuta256/sais
 
+libdivsufsort-lite taken from https://code.google.com/archive/p/libdivsufsort/downloads
+
 Thanks Mc.Gugi for uzLib (not used but very helpful).
 
 Thanks Eternity for investigate why sais produce different results.
