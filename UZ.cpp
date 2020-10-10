@@ -661,11 +661,12 @@ int main( int argc, char* argv[] ) {
 				#if WIN32
 					SYSTEM_INFO sysinfo;
 					GetSystemInfo(&sysinfo);
-					ThreadsCount = Max<INT>(1, Min<INT>(sysinfo.dwNumberOfProcessors, MAX_THREADS));					
+					ThreadsCount = sysinfo.dwNumberOfProcessors;
 				#else
-				ThreadsCount = get_nprocs();
+					ThreadsCount = get_nprocs();
 				#endif
 			}
+			ThreadsCount = Max<INT>(1, Min<INT>(ThreadsCount, MAX_THREADS));
 			//ThreadsCount = 1; // dbg
 			Warn.Logf(TEXT("Used %d threads."), ThreadsCount);
 
