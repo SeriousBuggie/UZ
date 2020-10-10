@@ -12,7 +12,7 @@
 #include <FCodec.h>
 //#include <Engine.h>
 
-#include "sais.h"
+#include "divsufsort.h"
 
 INT GFilesOpen, GFilesOpened;
 
@@ -84,7 +84,8 @@ typedef struct {
 DWORD WINAPI BWTThread( LPVOID lpParam ) {
 	BWTData* Data = (BWTData*)lpParam;
 	if (Data->Encode) {
-		int ret = sais(Data->CompressBuffer, Data->Temp, Data->CompressLength + 1);
+		Data->CompressBuffer[Data->CompressLength] = 255;
+		int ret = divsufsort(Data->CompressBuffer, Data->Temp, Data->CompressLength + 1);
 		Data->Temp[Data->CompressLength] = Data->CompressLength;
 		Data->First = 0, Data->Last = 0;
 		for (INT i = 0; i < Data->CompressLength + 1; i++) {
