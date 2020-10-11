@@ -376,6 +376,8 @@ private:
 		FHuffman( INT InCh = -1, INT InCount = 0 )
 			: Ch(InCh), Count(InCount), Child()
 		{
+			Child[0] = NULL;
+			Child[1] = NULL;
 		}
 		~FHuffman()
 		{
