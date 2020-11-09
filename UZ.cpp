@@ -752,6 +752,7 @@ int main( int argc, char* argv[] ) {
 					if (CSize > USize && !AllowBad) {
 						Warn.Logf(TEXT("Skipped: This .uz file cause crash on clients below 469. Use the 'allowbad' parameter to create this .uz file anyway.\n")
 							TEXT("Such files should be the last in the ServerPackages list to avoid speed drops for all subsequent files on older clients."));
+						GFileManager->Delete(*CFile);
 						continue;
 					}
 					FLOAT Rate = 100.f*CSize/USize;					
