@@ -28,3 +28,5 @@ Thanks Eternity for investigate why sais produce different results.
 For use on Windows need install latest Runtime for Visual Studio: 
 
 https://support.microsoft.com/en-us/topic/the-latest-supported-visual-c-downloads-2647da03-1eea-4433-9aff-95f26a218cc0
+or
+https://www.microsoft.com/en-us/download/details.aspx?id=53840
