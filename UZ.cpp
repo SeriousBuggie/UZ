@@ -529,6 +529,8 @@ public:
 		{	
 			FHuffman* Node = &Root;
 			while( Node->Ch==-1 ) {
+				if (Pos >= TotalBits)
+					return 0;
 				Node = Node->Child[(Data[Pos>>3] & GShift[Pos&7]) != 0];
 				Pos++;
 			}
