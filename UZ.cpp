@@ -512,7 +512,7 @@ public:
 	UBOOL Decode( FArchive& In, FArchive& Out )
 	{
 		guard(FCodecHuffman::Decode);
-		INT Total;
+		INT Total = 0;
 		In << Total;
 		TArray<BYTE> InArray( In.TotalSize()-In.Tell() );
 		In.Serialize( &InArray(0), InArray.Num() );
@@ -633,7 +633,7 @@ int main( int argc, char* argv[] ) {
 
 		// Switch into executable's directory.
 		GFileManager->Init(1);
-		GFileManager->SetDefaultDirectory( appBaseDir() );
+		UBOOL UseBaseDir = FALSE;
 
 		// Memory initalization.
 		GMem.Init( 65536 );
@@ -728,6 +728,11 @@ int main( int argc, char* argv[] ) {
 					}
 					
 					FArchive* UFileAr = GFileManager->CreateFileReader(*UFile);
+					if (!UFileAr && !UseBaseDir) {
+						UseBaseDir = TRUE;
+						GFileManager->SetDefaultDirectory( appBaseDir() );
+						UFileAr = GFileManager->CreateFileReader(*UFile);
+					}
 					if (!UFileAr) {
 						Warn.Logf(TEXT("Source %s not found"), *UFile);
 						continue;
@@ -773,6 +778,11 @@ int main( int argc, char* argv[] ) {
 						UFile = CFile + TEXT(".u");
 					}
 					FArchive* CFileAr = GFileManager->CreateFileReader(*CFile);
+					if (!CFileAr && !UseBaseDir) {
+						UseBaseDir = TRUE;
+						GFileManager->SetDefaultDirectory( appBaseDir() );
+						CFileAr = GFileManager->CreateFileReader(*CFile);
+					}
 					if (!CFileAr) {
 						Warn.Logf(TEXT("Source %s not found"), *CFile);
 						continue;
