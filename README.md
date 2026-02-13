@@ -15,6 +15,8 @@ This tool produce fully compatible .uz file. No need ucc.exe.
 
 Compressed faster in 100-700 times.
 
+See [BUILDING.md](BUILDING.md) for build instructions (Linux, macOS).
+
 bwtsort taken from https://sourceforge.net/projects/bwtcoder/
 
 sais taken from https://sites.google.com/site/yuta256/sais
